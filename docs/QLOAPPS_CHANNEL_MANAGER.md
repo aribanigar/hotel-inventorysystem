@@ -1,0 +1,162 @@
+# QloApps Channel Manager: how it connects hotels to the OTAs
+
+Sources: the Webkul store page for the "QloApps PMS & Channel Manager Connector", the
+connector's source code (`modules/qlocmconnector`, v7.0.0, in the QloApps zip), and a
+screenshot of the hosted QloApps Channel Manager (trial account). Studied 2026-10-30.
+
+> The API contract in section 4 is **read from the connector's code**, not from a
+> published spec. Webkul can change it. Confirm with Webkul that a non-QloApps PMS may
+> connect before building on it.
+
+## 1. The three pieces
+
+```
+ Hotel's PMS (QloApps)          QloApps Channel Manager             OTAs / portals
+ ---------------------          (hosted SaaS by Webkul)             --------------
+ qlocmconnector module  ──push ARI──▶ channels.qloapps.com  ──ARI──▶ Booking.com, Expedia,
+   (free download)      ◀─bookings── (paid plan; trial in    ◀─res.── MakeMyTrip/Goibibo, Agoda,
+                                      the screenshot)                Airbnb, Yatra, Trip.com ...
+```
+
+- **The connector (free)** is only the PMS-side plug. It never talks to an OTA.
+- **The hosted channel manager (paid subscription, trial available)** holds the OTA
+  certifications and mappings. Hotels pick channels under *Channels > Add channel*.
+- **Portals offered** (from the screenshot): Booking.com, Expedia, Goibibo and
+  MakeMyTrip (one connection), Agoda, Bakuun, Yatra, Airbnb, Hostelworld, HyperGuest,
+  Trip.com/Ctrip, Despegar. Bakuun and HyperGuest are B2B distribution networks
+  that resell to many more agents.
+- **Menus** in the CM: Hotels, Channels, Room types, Price & inventory, PMS, Bookings,
+  Revenue Management, Configurations, Logs.
+
+## 2. Setup (store page, matches the code)
+
+1. Install the connector module in QloApps.
+2. QloApps *Webservices*: enable the API key with `cm_api` permissions (GET/POST/PUT...).
+3. In the hosted CM: *Account settings* > generate API **Client ID + Client Secret**.
+4. Paste them into the connector. It fetches an OAuth2 token from the CM.
+5. Add a **cron job every minute** (`qlochannelmanagerapicron.php?token=...`).
+6. In the CM: connect the PMS (it calls back into QloApps with the webservice key),
+   import hotels and room types, then map each room type to each channel.
+
+Store page facts: module $0.00, "single application" licence, support replies within one
+business day, FAQ empty. It markets "real-time" sync, but it is **cron-paced (every minute)**.
+
+## 3. Data flow
+
+**PMS to CM (availability and price):**
+1. Any change in QloApps (booking, cancellation, refund, room disabled, room added,
+   price rule, LOS rule, settings) fires a hook. The hook marks `(hotel, room type, date)`
+   rows as dirty in `qlo_ari_updates`, coalescing repeated edits to the same date.
+2. The cron job reads the dirty rows and **recomputes availability at push time**
+   (physical rooms minus booked minus disabled). It merges consecutive identical days into
+   ranges and POSTs per hotel to `push_ari`. Success deletes the rows; failure resets
+   them for the next minute.
+
+**CM to PMS (bookings):** when a guest books on an OTA, the CM calls
+`POST /api/cm_api/booking_notification` on the PMS with `booking_status` set to
+`new`, `modified`, `cancelled` or `refunded`. It is de-duplicated by
+`id_channel_manager_booking`, and the CM sends one request per room type with the same id.
+
+**CM to PMS (reads):** the CM pulls `properties`, `room_types`, `ari` and `bookings` for
+the initial import and for reconciliation.
+
+## 4. The contract (from the code)
+
+### Outbound: PMS to CM
+
+| Call | Detail |
+|---|---|
+| Token | `POST https://channels.qloapps.com/oauth/token`, form body `grant_type=client_credentials&client_id=..&client_secret=..` returns `access_token`. On a 401 from `push_ari`, the cron fetches a new token and retries once. |
+| Push ARI | `POST https://channels.qloapps.com/api/v1/push_ari`, headers `Authorization: Bearer <token>`, `X-PMS-REQUEST: true`, JSON body below, one hotel per request |
+
+```json
+{
+  "id_property": "",
+  "id_pms_property": "12",
+  "ari_info": [
+    {
+      "id_room_type": "",
+      "id_pms_room_type": "34",
+      "date_from": "2026-12-20",
+      "date_to": "2026-12-24",
+      "weekdays": ["sun","mon","tue","wed","thu","fri","sat"],
+      "closed": 0,
+      "availability": 3,
+      "rates": ["{\"id_rate_plan\":\"0\",\"id_pms_rate_plan\":\"0\",\"price_with_tax\":8925,\"price_without_tax\":8500,\"tax\":425,\"occupancy_based_price\":\"[]\",\"min_los_arrival\":0,\"max_los_arrival\":0,\"min_los_stay\":1,\"max_los_stay\":30,\"stop_sell\":0,\"close_to_arrival\":0,\"close_to_departure\":0,\"min_advanced_booking_offset\":0,\"max_advanced_booking_offset\":365}"]
+    }
+  ]
+}
+```
+
+Notes: each `rates` entry is a **JSON string inside JSON**. The connector always sends
+**one rate plan ("0")** and hard-codes `stop_sell`, `close_to_arrival` and
+`close_to_departure` to 0, so multiple rate plans (EP/CP/MAP/AP), CTA, CTD and stop-sell
+are **not** sent by this connector, even though the payload has fields for them.
+
+### Inbound: CM to PMS (QloApps webservice `cm_api`, auth = webservice key)
+
+| Method + path | Returns / does |
+|---|---|
+| `GET /api/cm_api/test_connection` | `{success, QLO_VERSION}` |
+| `GET /api/cm_api/properties` | Hotels: id, name, email, phone, currency, country_code, state, city, address1, zip_code, latitude, longitude, timezone |
+| `GET /api/cm_api/room_types?filter[id_property]=` | id, name, total_rooms, base_occupancy, max_adults, max_children, max_infants |
+| `GET /api/cm_api/ari?filter[id_property]=...` | Current ARI (pull, used for full sync) |
+| `GET /api/cm_api/bookings?filter[id_property]=...` | Booking list |
+| `POST /api/cm_api/booking_notification` | Create, modify or cancel a booking |
+
+`booking_notification` body, main fields: `id_property`, `id_channel_manager_booking`,
+`id_booking` (PMS id, for modify/cancel), `booking_status`, `currency`, `source` /
+`business_source` (OTA name), `booking_date`, `guest_detail` {firstname, lastname, email,
+phone, address, city, zip, country_code, state_code}, `room_bookings[]` {id_room_type,
+check_in_date, check_out_date, number_of_rooms, rooms[] {occupancy {adults, children,
+children_ages}, price_details {unit_price_without_tax, total_price_with_tax, total_tax},
+services[]}}, `price_details`, `payment_detail` {payment_type: online | remote | pay at
+hotel, payment_status: paid | unpaid | partial}, `cart_rules`, `remark`.
+
+## 5. Strengths and weaknesses
+
+**Strong:**
+- Wide OTA list including the Indian ones (MakeMyTrip/Goibibo, Yatra), with no
+  certification work for the hotel.
+- Booking de-duplication by CM id. Modify and cancel are handled. Room-type merging.
+
+**Weak:**
+- Cron-paced: up to about a minute of lag on every change, which is an overbooking window.
+- No transaction around the dirty-row write; no backoff or dead-letter queue.
+- One rate plan per room type; stop-sell, CTA and CTD are not sent.
+- An OTA booking for a room already gone becomes an "overbooked" order (back order),
+  resolved by hand.
+- Trust is partly by IP allow-list (two Webkul IPs skip LOS rules).
+- The contract is unpublished and tied to the QloApps webservice framework.
+
+## 6. What this means for us
+
+**Option A: plug our system into the QloApps Channel Manager as its PMS.**
+Our backend already has the right parts. A "QloApps CM adapter" would be:
+1. **Outbound:** a new outbox event type that turns our `ARI_CHANGED` events into
+   `push_ari` payloads (our ids as `id_pms_*`, our real prices), with the OAuth token
+   cached and refreshed on 401. Our outbox delivers it in seconds with retries,
+   **faster than their one-minute cron**.
+2. **Inbound:** implement the six `cm_api` endpoints above on our server. Then
+   `booking_notification` runs through the **same row-locked path** as walk-ins and the
+   Live Ping.
+   - An OTA booking cannot be refused (the guest already booked on the OTA), so if
+     the room is gone we still record it, mark it `OVERBOOKED` and raise an alert.
+     QloApps does the same, but we would surface it instantly.
+3. **Result:** houseboats and boutique stays managed in our extranet would reach
+   Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda, Airbnb, Yatra and the rest through a
+   CM that is already certified.
+
+**Before building it, confirm with Webkul:**
+- Will they connect a non-QloApps PMS to their hosted CM? The PMS settings page in your
+  trial account should show what URL and key it asks for.
+- What is the subscription price per property after the trial (the trial ends 9 Nov 2026)?
+- Can it receive multiple rate plans, stop-sell, CTA and CTD through `push_ari` (the
+  fields exist) or `occupancy_based_price`?
+- What are the rate limits, and is there a sandbox?
+
+**Option B: STAAH / AxisRooms as the channel** (our existing Source 2 webhook). This is
+better for hotels that already use them.
+
+The two are not exclusive: Option A covers properties managed in our extranet, Option B
+covers hotels that already run a channel manager.

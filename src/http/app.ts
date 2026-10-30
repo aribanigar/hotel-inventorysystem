@@ -5,6 +5,11 @@ import { logger } from '../lib/logger.js';
 import { availabilityRouter } from './routes/availability.js';
 import { checkoutRouter } from './routes/checkout.js';
 import { extranetRouter } from './routes/extranet.js';
+import { hotelierRouter } from './routes/hotelier.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/extranet');
 import { paymentsRouter } from './routes/payments.js';
 import { webhooksRouter } from './routes/webhooks.js';
 
@@ -39,6 +44,24 @@ export function createApp() {
   app.use('/api/v1/checkout', checkoutRouter);
   app.use('/api/v1/hotels', availabilityRouter);
   app.use('/api/v1/extranet', extranetRouter);
+  app.use('/api/v1/hotelier', hotelierRouter);
+
+  // Hotelier web app: static files, locked down with a strict CSP (no inline script,
+  // no third-party origins, no framing).
+  app.use(
+    '/extranet',
+    (_req, res, next) => {
+      res.setHeader(
+        'content-security-policy',
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      );
+      res.setHeader('x-frame-options', 'DENY');
+      next();
+    },
+    // maxAge 0 + ETag: browsers revalidate every load (cheap 304s), so a deploy is
+    // visible to hotel staff immediately instead of after a stale-cache window.
+    express.static(PUBLIC_DIR, { index: 'index.html', maxAge: 0 }),
+  );
 
   app.get('/healthz', async (_req, res) => {
     try {

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <title>Hotel Extranet</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <!-- Sign in -->
+  <main id="login-view" class="login" hidden>
+    <form id="login-form" class="login-card" novalidate>
+      <div class="brand-mark" aria-hidden="true"></div>
+      <h1>Hotel Extranet</h1>
+      <p class="muted">Manage rooms, prices and walk-in bookings. Every change reaches all your sales channels.</p>
+      <label>Email
+        <input name="email" type="email" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+  </main>
+
+  <!-- App -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand-mark small" aria-hidden="true"></div>
+        <select id="hotel-select" aria-label="Choose hotel"></select>
+        <span id="source-badge" class="badge"></span>
+      </div>
+      <div class="topbar-right">
+        <span id="user-name" class="muted user-name"></span>
+        <button id="logout-btn" class="btn btn-ghost" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <div id="managed-banner" class="banner" hidden></div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="calendar" aria-selected="true">Calendar</button>
+      <button class="tab" role="tab" data-tab="bookings" aria-selected="false">Bookings</button>
+      <button class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
+    </nav>
+
+    <!-- Calendar -->
+    <section id="tab-calendar" class="panel">
+      <div class="toolbar">
+        <div class="seg">
+          <button id="cal-prev" class="btn btn-ghost" type="button" aria-label="Previous two weeks">&larr;</button>
+          <button id="cal-today" class="btn btn-ghost" type="button">Today</button>
+          <button id="cal-next" class="btn btn-ghost" type="button" aria-label="Next two weeks">&rarr;</button>
+        </div>
+        <span id="cal-range" class="muted"></span>
+        <button id="new-booking-btn" class="btn btn-accent" type="button">+ Offline booking</button>
+      </div>
+      <div class="legend muted">
+        <span><i class="dot dot-free"></i>Rooms left to sell</span>
+        <span><i class="dot dot-low"></i>Last room</span>
+        <span><i class="dot dot-out"></i>Sold out</span>
+        <span><i class="dot dot-closed"></i>Closed</span>
+      </div>
+      <div class="grid-wrap" id="cal-grid" aria-live="polite"></div>
+      <p class="hint muted">Tap a day to change rooms, price or restrictions. Select a range in the editor to update many days at once.</p>
+    </section>
+
+    <!-- Bookings -->
+    <section id="tab-bookings" class="panel" hidden>
+      <div class="toolbar">
+        <label class="inline">From <input id="bk-from" type="date"></label>
+        <label class="inline">To <input id="bk-to" type="date"></label>
+        <button id="bk-refresh" class="btn btn-ghost" type="button">Show</button>
+        <button id="new-booking-btn-2" class="btn btn-accent" type="button">+ Offline booking</button>
+      </div>
+      <div id="bk-list" class="cards"></div>
+    </section>
+
+    <!-- Activity -->
+    <section id="tab-activity" class="panel" hidden>
+      <ol id="activity-list" class="activity"></ol>
+    </section>
+  </div>
+
+  <!-- Day / range editor -->
+  <dialog id="edit-dialog" class="sheet">
+    <form id="edit-form" method="dialog" novalidate>
+      <header class="sheet-head">
+        <div>
+          <h2 id="edit-title">Edit</h2>
+          <p id="edit-sub" class="muted"></p>
+        </div>
+        <button class="btn btn-ghost" value="cancel" type="submit" aria-label="Close">&times;</button>
+      </header>
+      <div class="stats" id="edit-stats"></div>
+      <div class="row">
+        <label>From <input name="startDate" type="date" required></label>
+        <label>To <input name="endDate" type="date" required></label>
+      </div>
+      <div class="row">
+        <label>Rooms left to sell <input name="availability" type="number" min="0" max="1000" inputmode="numeric"></label>
+        <label>Price per night (INR) <input name="price" type="text" inputmode="decimal" placeholder="e.g. 8500"></label>
+      </div>
+      <div class="row">
+        <label>Minimum stay (nights) <input name="minLos" type="number" min="1" max="365" inputmode="numeric"></label>
+        <span></span>
+      </div>
+      <fieldset class="toggles">
+        <label class="check"><input name="stopSell" type="checkbox"> Close these dates for online sale</label>
+        <label class="check"><input name="closedToArrival" type="checkbox"> No check-ins on these dates</label>
+        <label class="check"><input name="closedToDeparture" type="checkbox"> No check-outs on these dates</label>
+      </fieldset>
+      <p id="edit-error" class="form-error" role="alert" hidden></p>
+      <p id="edit-readonly" class="muted" hidden>Your role can view this but not change it.</p>
+      <footer class="sheet-foot">
+        <button id="edit-sell" class="btn btn-accent" type="button">Record a sale for this day</button>
+        <button id="edit-save" class="btn btn-primary" type="button">Save changes</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Offline booking -->
+  <dialog id="booking-dialog" class="sheet">
+    <form id="booking-form" method="dialog" novalidate>
+      <header class="sheet-head">
+        <div>
+          <h2>Offline booking</h2>
+          <p class="muted">Walk-in, phone, WhatsApp or agent. The rooms come off every channel at once.</p>
+        </div>
+        <button class="btn btn-ghost" value="cancel" type="submit" aria-label="Close">&times;</button>
+      </header>
+      <label>Room type <select name="roomTypeId" required></select></label>
+      <div class="row">
+        <label>Check-in <input name="checkIn" type="date" required></label>
+        <label>Check-out <input name="checkOut" type="date" required></label>
+      </div>
+      <div class="row three">
+        <label>Rooms <input name="rooms" type="number" min="1" max="20" value="1" inputmode="numeric" required></label>
+        <label>Adults <input name="adults" type="number" min="1" max="60" value="2" inputmode="numeric" required></label>
+        <label>Children <input name="children" type="number" min="0" max="40" value="0" inputmode="numeric"></label>
+      </div>
+      <fieldset>
+        <legend>Booked via</legend>
+        <div class="chips" id="source-chips"></div>
+      </fieldset>
+      <label id="source-detail-wrap" hidden>Agent or channel name <input name="sourceDetail" type="text" maxlength="120"></label>
+      <label>Guest name <input name="guestName" type="text" maxlength="120" autocomplete="off" required></label>
+      <div class="row">
+        <label>Phone <input name="guestPhone" type="tel" inputmode="tel" autocomplete="off" placeholder="+91"></label>
+        <label>Email <input name="guestEmail" type="email" autocomplete="off"></label>
+      </div>
+      <div class="row">
+        <label>Amount agreed (INR) <input name="amount" type="text" inputmode="decimal" placeholder="optional"></label>
+        <span id="booking-estimate" class="muted estimate"></span>
+      </div>
+      <label>Notes <textarea name="notes" rows="2" maxlength="1000"></textarea></label>
+      <p id="booking-error" class="form-error" role="alert" hidden></p>
+      <footer class="sheet-foot">
+        <button class="btn btn-ghost" value="cancel" type="submit">Cancel</button>
+        <button id="booking-save" class="btn btn-accent" type="button">Confirm booking</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

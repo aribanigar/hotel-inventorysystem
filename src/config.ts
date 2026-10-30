@@ -24,6 +24,8 @@ const EnvSchema = z
     RUN_JOBS_IN_PROCESS: bool.default(true),
     /** Live Ping requests allowed per IP per minute. */
     LIVE_PING_RATE_LIMIT: z.coerce.number().int().min(1).default(30),
+    /** Extranet sign-in attempts allowed per IP per minute. */
+    LOGIN_RATE_LIMIT: z.coerce.number().int().min(1).default(20),
 
     SUPPLIER_BASE_URL: z.url().optional(),
     SUPPLIER_API_KEY: z.string().optional(),

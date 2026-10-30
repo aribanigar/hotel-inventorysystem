@@ -5,8 +5,10 @@ to its real source of truth, and re-verifies it with a **Live Ping** the moment 
 clicks "Proceed to Pay", so nobody pays for a room that no longer exists or a price that
 has changed.
 
-Research on SiteMinder, STAAH, AxisRooms, RateGain and Profitroom, plus the design
-reasoning, is in [docs/RESEARCH.md](docs/RESEARCH.md).
+Research and design notes:
+- [docs/RESEARCH.md](docs/RESEARCH.md): SiteMinder, STAAH, AxisRooms, RateGain and Profitroom, and our architecture.
+- [docs/QLOAPPS_STUDY.md](docs/QLOAPPS_STUDY.md): the open-source QloApps PMS, read from source, and what we took from it.
+- [docs/QLOAPPS_CHANNEL_MANAGER.md](docs/QLOAPPS_CHANNEL_MANAGER.md): how the QloApps Channel Manager connects to Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda and others, and how we could plug into it.
 
 **Stack:** Node.js 20+ / TypeScript, Express 5, PostgreSQL 14+ (row locking via
 `SELECT ... FOR UPDATE`), zod validation, pino logs. It runs as a standalone service next
@@ -32,6 +34,12 @@ npm run dev:mock-supplier       # fake TBO-style supplier on :4100 (separate ter
 npm run dev                     # API on :4000, jobs run in-process
 ```
 
+Give a hotelier a login, then open http://localhost:4000/extranet:
+
+```bash
+HOTEL_USER_PASSWORD='choose-a-strong-one-1' npx tsx src/dev/createHotelUser.ts owner@hotel.com "Owner Name" <hotelId> owner
+```
+
 Tests run against a real Postgres (they drop and recreate the `public` schema, so point
 them at a throwaway database):
 
@@ -39,12 +47,40 @@ them at a throwaway database):
 TEST_DATABASE_URL=postgres://postgres@localhost:5432/hotel_inventory_test npm test
 ```
 
-The 24 tests cover: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
+The 39 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
 pushes, atomic rejection of unmapped codes, holds and decrements, price changes,
 restrictions, **10 buyers racing for the last room (exactly one wins)**, double-click
 idempotency, expiry, customer release, payment confirmation and CM notification, wrong
 amount, late payment after expiry, supplier timeout, malformed supplier JSON, wrong room
-echoed back, and the circuit breaker.
+echoed back, and the circuit breaker. For the extranet: sign-in, lockout, CSRF header,
+per-hotel access, role limits, offline sales and their outbox events, sold-out refusals,
+cancel, no-show and early check-out giving nights back exactly once, channel-manager
+hotels redirected to their CM, and **a walk-in racing 5 online buyers for the last room
+(exactly one wins)**.
+
+## Hotelier extranet (`/extranet`)
+
+A mobile-first web app for hotel staff, served by this same server (no build step).
+
+- **Calendar:** each room type and date shows rooms left, price, sold offline and
+  online, rooms in someone's checkout right now, and closed days. Tap a day to change
+  rooms, price, minimum stay, closing, or no check-in / check-out, for one day or a range.
+- **Offline booking:** for walk-in, phone, WhatsApp, travel agent or other OTA sales.
+  The rooms are taken under the same row locks as online checkout, so a walk-in and an
+  online buyer can never both get the last room. Every subscribed channel is notified
+  in the same transaction.
+- **Bookings:** offline and paid online bookings in one list, with check in, check out,
+  no-show and cancel. Cancel, no-show and early check-out put the unused nights back on
+  sale, once.
+- **Activity:** an audit trail of who changed what and when.
+- **Roles per hotel:** `owner`, `manager` (rates and inventory), `frontdesk` (bookings
+  only). Hotels whose rooms come from STAAH, AxisRooms or a supplier are view-only, with
+  a note to record sales in their channel manager.
+- **Security:** scrypt passwords, an account lock after 5 failed sign-ins, HttpOnly
+  SameSite=Strict session cookies stored hashed, a CSRF header on every change, a strict
+  CSP, and no server data rendered as HTML.
+
+API: `/api/v1/hotelier/...` (see [src/http/routes/hotelier.ts](src/http/routes/hotelier.ts)).
 
 ## API
 
@@ -150,12 +186,15 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 - [ ] Encrypt `channel_partners.signing_secret` and `channel_subscriptions.signing_secret` at rest (KMS / pgcrypto).
 - [ ] Put a shared rate limiter (CDN/WAF or Redis) in front if you run more than one API instance. The built-in limiter is per process.
 - [ ] Alert on log lines containing `ALERT:` (refunds needed, dead-lettered deliveries) and on `inventory_holds.status = 'NEEDS_REFUND'`.
-- [ ] Replace `EXTRANET_ADMIN_TOKEN` with your existing admin auth when wiring the extranet UI.
+- [ ] Keep `EXTRANET_ADMIN_TOKEN` for ops scripts only; hotel staff sign in with their own accounts.
+- [ ] Serve over HTTPS so the session cookie gets the `Secure` flag (automatic with `NODE_ENV=production`).
 
 ## Not built yet
 
-- Direct OTA connections out (MakeMyTrip, Booking.com, Agoda). The outbox and signed
-  delivery are ready, but each OTA needs its own adapter and partner certification.
+- OTA connections for extranet hotels. The fastest route is an adapter for the hosted
+  QloApps Channel Manager (see docs/QLOAPPS_CHANNEL_MANAGER.md). Direct OTA connectors
+  each need partner certification.
 - Automated Razorpay refunds for `NEEDS_REFUND` (currently flagged for ops).
-- Admin UI for mapping and extranet editing.
+- Admin UI for creating hotels, room types and channel mappings (done via SQL or seed today).
+- Physical room numbers, room assignment and housekeeping status.
 - Booking modifications and cancellations after confirmation.

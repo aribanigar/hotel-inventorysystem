@@ -5,6 +5,7 @@
 export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'UNAUTHORIZED'
+  | 'FORBIDDEN' //         signed in, but this role may not do that
   | 'NOT_FOUND'
   | 'SOLD_OUT' //            room no longer available for one or more nights
   | 'PRICE_CHANGED' //       live price differs from what the user saw
@@ -22,6 +23,7 @@ export type ErrorCode =
 const STATUS: Record<ErrorCode, number> = {
   VALIDATION_ERROR: 400,
   UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
   NOT_FOUND: 404,
   SOLD_OUT: 409,
   PRICE_CHANGED: 409,

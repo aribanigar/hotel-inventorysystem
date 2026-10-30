@@ -17,6 +17,7 @@ export default defineConfig({
       EXTRANET_ADMIN_TOKEN: 'test-extranet-admin-token-0123456789',
       HOLD_TTL_SECONDS: '600',
       LIVE_PING_RATE_LIMIT: '1000',
+      LOGIN_RATE_LIMIT: '1000',
     },
   },
 });
