@@ -5,6 +5,7 @@ import { logger } from '../lib/logger.js';
 import { availabilityRouter } from './routes/availability.js';
 import { channexWebhookRouter } from './routes/channexWebhook.js';
 import { checkoutRouter } from './routes/checkout.js';
+import { cronRouter } from './routes/cron.js';
 import { extranetRouter } from './routes/extranet.js';
 import { hotelierRouter } from './routes/hotelier.js';
 import { qloCmApiRouter } from './routes/qloCmApi.js';
@@ -18,7 +19,8 @@ import { webhooksRouter } from './routes/webhooks.js';
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  // Behind one proxy/load balancer (Hostinger, Railway, Nginx). Needed for correct req.ip.
+  // Behind one proxy/load balancer (Vercel, Hostinger, Railway, Nginx). Needed for correct
+  // req.ip. Vercel overwrites X-Forwarded-For with the client IP, so one hop is right there too.
   app.set('trust proxy', 1);
 
   // Request id + basic security headers + access log.
@@ -51,6 +53,8 @@ export function createApp() {
   app.use('/api/v1/hotels', availabilityRouter);
   app.use('/api/v1/extranet', extranetRouter);
   app.use('/api/v1/hotelier', hotelierRouter);
+  // Scheduled jobs for serverless hosting (Vercel Cron).
+  app.use('/api/cron', cronRouter);
 
   // Hotelier web app: static files, locked down with a strict CSP (no inline script,
   // no third-party origins, no framing).

@@ -1,5 +1,6 @@
+import { attachDatabasePool } from '@vercel/functions';
 import pg from 'pg';
-import { config } from '../config.js';
+import { config, onVercel } from '../config.js';
 import { AppError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 
@@ -24,6 +25,9 @@ export const pool = new pg.Pool({
 // An idle client losing its connection emits 'error' on the pool. Without this
 // listener Node treats it as an unhandled error event and the process crashes.
 pool.on('error', (err) => logger.error({ err }, 'idle postgres client error'));
+// On Vercel, keep a suspended instance alive just long enough to close idle
+// connections, so they don't pile up on the database between invocations.
+if (onVercel) attachDatabasePool(pool);
 
 export type Db = pg.PoolClient | pg.Pool;
 

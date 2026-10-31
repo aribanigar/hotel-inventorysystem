@@ -7,6 +7,9 @@ try {
   /* no .env file: fine */
 }
 
+/** True inside a Vercel build or function (Vercel sets VERCEL=1). */
+export const onVercel = Boolean(process.env.VERCEL);
+
 const bool = z
   .enum(['true', 'false', '1', '0'])
   .transform((v) => v === 'true' || v === '1');
@@ -18,10 +21,18 @@ const EnvSchema = z
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    DB_POOL_MAX: z.coerce.number().int().min(2).max(200).default(20),
+    /** Direct (non-pooler) connection for migrations; Neon's Vercel integration sets it. */
+    DATABASE_URL_UNPOOLED: z.string().min(1).optional(),
+    /** Per instance. Serverless runs many small instances, so keep it low there. */
+    DB_POOL_MAX: z.coerce.number().int().min(2).max(200).default(onVercel ? 5 : 20),
 
     HOLD_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
-    RUN_JOBS_IN_PROCESS: bool.default(true),
+    /** Background loops inside the API process. Off on Vercel, where cron calls /api/cron/*. */
+    RUN_JOBS_IN_PROCESS: bool.default(!onVercel),
+    /** Bearer token Vercel Cron (or any scheduler) sends to /api/cron/*. Vercel sets the header from this var. */
+    CRON_SECRET: z.string().min(16).optional(),
+    /** How long one /api/cron/tick call keeps running the fast jobs before returning. */
+    CRON_TICK_BUDGET_MS: z.coerce.number().int().min(1_000).max(280_000).default(50_000),
     /** Live Ping requests allowed per IP per minute. */
     LIVE_PING_RATE_LIMIT: z.coerce.number().int().min(1).default(30),
     /** Extranet sign-in attempts allowed per IP per minute. */
@@ -56,6 +67,9 @@ const EnvSchema = z
     // Fail fast at boot rather than at the first customer checkout.
     if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER !== 'razorpay') {
       ctx.addIssue({ code: 'custom', path: ['PAYMENT_PROVIDER'], message: 'must be razorpay in production' });
+    }
+    if (onVercel && env.NODE_ENV === 'production' && !env.CRON_SECRET) {
+      ctx.addIssue({ code: 'custom', path: ['CRON_SECRET'], message: 'required on Vercel: cron jobs run the background work' });
     }
     if (env.PAYMENT_PROVIDER === 'razorpay') {
       for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) {

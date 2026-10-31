@@ -23,6 +23,8 @@ export default defineConfig({
       CHANNEX_WEBHOOK_SECRET: 'test-channex-webhook-secret-0123',
       CHANNEX_WEBHOOK_HMAC_SECRET: 'test-channex-hmac-secret',
       CHANNEX_MIN_PUSH_INTERVAL_MS: '0',
+      CRON_SECRET: 'test-cron-secret-0123456789',
+      CRON_TICK_BUDGET_MS: '1000',
     },
   },
 });

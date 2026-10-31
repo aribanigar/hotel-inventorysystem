@@ -1,13 +1,23 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pool } from './pool.js';
+import pg from 'pg';
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../db/migrations');
 
-/** Applies db/migrations/*.sql in name order, each in its own transaction, once. */
+/**
+ * Applies db/migrations/*.sql in name order, each in its own transaction, once.
+ * Uses its own direct connection: the session advisory lock below does not survive a
+ * transaction-mode pooler (PgBouncer / Neon "-pooler" host), so prefer DATABASE_URL_UNPOOLED.
+ */
 export async function migrate(): Promise<string[]> {
-  const client = await pool.connect();
+  // Loaded lazily so a skipped `--vercel-build` run doesn't need a valid environment.
+  const { config } = await import('../config.js');
+  const client = new pg.Client({
+    connectionString: config.DATABASE_URL_UNPOOLED ?? config.DATABASE_URL,
+    application_name: 'hotel-inventory-migrate',
+  });
+  await client.connect();
   const applied: string[] = [];
   try {
     // Advisory lock: two app instances booting together won't both migrate.
@@ -35,19 +45,30 @@ export async function migrate(): Promise<string[]> {
     return applied;
   } finally {
     await client.query('SELECT pg_advisory_unlock(727274)').catch(() => {});
-    client.release();
+    await client.end().catch(() => {});
   }
+}
+
+/**
+ * `--vercel-build`: run from Vercel's build step. Migrates on production deployments
+ * only, so a preview build can never change the live schema before its code ships.
+ * Set MIGRATE_ON_BUILD=true on a preview environment that has its own database.
+ */
+function shouldRun(): boolean {
+  if (!process.argv.includes('--vercel-build')) return true;
+  return process.env.VERCEL_ENV === 'production' || process.env.MIGRATE_ON_BUILD === 'true';
 }
 
 // Run directly: `npm run migrate`
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  migrate()
-    .then((files) => {
-      console.log(files.length ? `applied: ${files.join(', ')}` : 'already up to date');
-      return pool.end();
-    })
-    .catch((err) => {
-      console.error(err);
-      process.exit(1);
-    });
+  if (!shouldRun()) {
+    console.log(`migrations skipped (VERCEL_ENV=${process.env.VERCEL_ENV ?? 'unset'}; set MIGRATE_ON_BUILD=true to run)`);
+  } else {
+    migrate()
+      .then((files) => console.log(files.length ? `applied: ${files.join(', ')}` : 'already up to date'))
+      .catch((err) => {
+        console.error(err);
+        process.exit(1);
+      });
+  }
 }

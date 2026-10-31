@@ -16,6 +16,7 @@
  * after it is saved. We answer 200 at once (Channex retries 5xx for ~24 h).
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { waitUntil } from '@vercel/functions';
 import express, { Router, type Request, type Response } from 'express';
 import { config } from '../../config.js';
 import { pullChannexBookings } from '../../channels/channex/bookings.js';
@@ -69,8 +70,10 @@ channexWebhookRouter.post(
     }
     const event = String(body.event ?? '');
     if (BOOKING_EVENTS.has(event)) {
-      // Fire and forget; the feed pull is idempotent and also runs on a timer.
-      void pullChannexBookings().catch((err) => logger.warn({ err }, 'Channex pull after webhook failed'));
+      // Answer now, pull after; the feed pull is idempotent and also runs on a timer.
+      // waitUntil keeps a serverless instance alive until it finishes (no-op elsewhere).
+      const pull = pullChannexBookings().catch((err) => logger.warn({ err }, 'Channex pull after webhook failed'));
+      waitUntil(pull);
     } else if (ALERT_EVENTS.has(event)) {
       logger.error({ event, propertyId: body.property_id, payload: body.payload }, 'ALERT: Channex reported a channel problem');
     } else {

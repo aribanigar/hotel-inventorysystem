@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run vercel-build",
+  "crons": [
+    { "path": "/api/cron/tick", "schedule": "* * * * *" },
+    { "path": "/api/cron/hourly", "schedule": "7 * * * *" },
+    { "path": "/api/cron/daily", "schedule": "23 3 * * *" }
+  ],
+  "redirects": [
+    { "source": "/", "destination": "/extranet/", "permanent": false },
+    { "source": "/extranet", "destination": "/extranet/", "permanent": false }
+  ],
+  "rewrites": [
+    { "source": "/extranet/", "destination": "/extranet/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/extranet/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    }
+  ]
+}

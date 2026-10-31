@@ -34,6 +34,9 @@ npm run dev:mock-supplier       # fake TBO-style supplier on :4100 (separate ter
 npm run dev                     # API on :4000, jobs run in-process
 ```
 
+To host it on Vercel (one Express function, Vercel Cron for the background jobs, Neon
+Postgres), follow [docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md).
+
 Give a hotelier a login, then open http://localhost:4000/extranet:
 
 ```bash
@@ -47,7 +50,7 @@ them at a throwaway database):
 TEST_DATABASE_URL=postgres://postgres@localhost:5432/hotel_inventory_test npm test
 ```
 
-The 71 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
+The 75 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
 pushes, atomic rejection of unmapped codes, holds and decrements, price changes,
 restrictions, **10 buyers racing for the last room (exactly one wins)**, double-click
 idempotency, expiry, customer release, payment confirmation and CM notification, wrong
@@ -219,6 +222,7 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 | `POST /api/v1/webhooks/channel-manager` | Inbound ARI from STAAH / AxisRooms (see below) |
 | `POST /api/v1/channex/webhook` | Channex booking events (shared-secret header and/or HMAC); triggers a feed pull |
 | `PUT /api/v1/extranet/hotels/:hotelId/ari` | Houseboat / boutique owner updates (Bearer `EXTRANET_ADMIN_TOKEN`) |
+| `GET /api/cron/tick`, `/hourly`, `/daily` | Background jobs for serverless hosting (Bearer `CRON_SECRET`; Vercel Cron calls them) |
 | `GET /healthz` | Liveness + DB check |
 
 ## Onboarding a channel manager (STAAH, AxisRooms)
@@ -261,7 +265,7 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 ## Production checklist
 
 - [ ] Set `PAYMENT_PROVIDER=razorpay` plus all three `RAZORPAY_*` vars (boot fails without them in production).
-- [ ] Set `RUN_JOBS_IN_PROCESS=false` on API instances and run `npm run start:worker` as its own process (one is enough; several are safe).
+- [ ] Set `RUN_JOBS_IN_PROCESS=false` on API instances and run `npm run start:worker` as its own process (one is enough; several are safe). On Vercel this is automatic: set `CRON_SECRET` and the crons in `vercel.json` run the jobs ([docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md)).
 - [ ] Replace the mock supplier contract in `external.ts` with the real TBO / Tripjack field mapping once their partner API docs are signed. Only that file changes.
 - [ ] Encrypt `channel_partners.signing_secret` and `channel_subscriptions.signing_secret` at rest (KMS / pgcrypto).
 - [ ] Put a shared rate limiter (CDN/WAF or Redis) in front if you run more than one API instance. The built-in limiter is per process.
