@@ -15,6 +15,10 @@ import express, { Router } from 'express';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { pool, withTransaction } from '../../db/pool.js';
+import {
+  channexCatalog, channexChannelsUrl, channexFullSync, channexStatus, connectChannex, createMissingInChannex, disconnectChannex,
+  retryChannexBookings, saveChannexMapping,
+} from '../../channels/channex/setup.js';
 import { listAudit } from '../../extranet/audit.js';
 import { clearSessionCookie, login, logout, readCookie, requireHotelRole, requireSession, SESSION_COOKIE, setSessionCookie } from '../../extranet/auth.js';
 import { getCalendar } from '../../extranet/calendar.js';
@@ -140,6 +144,24 @@ hotelierRouter.post('/hotels/:hotelId/channels/qloapps', requireHotelRole('owner
   res.json({ ...r, webserviceUrl: `${req.protocol}://${req.get('host')}` });
 });
 hotelierRouter.delete('/hotels/:hotelId/channels/qloapps', requireHotelRole('owner'), async (req, res) => res.json(await disconnectQloCm(H(req), U(req))));
+
+// Channex (direct OTA connectivity)
+const cxLimit = () => rateLimit({ windowMs: 60_000, max: 3, key: (req) => `${req.ip}:${req.params.hotelId}:${req.path}` });
+hotelierRouter.get('/hotels/:hotelId/channels/channex', requireHotelRole('manager'), async (req, res) => res.json(await channexStatus(H(req))));
+hotelierRouter.post('/hotels/:hotelId/channels/channex', requireHotelRole('owner'), cxLimit(), async (req, res) => res.json(await connectChannex(H(req), U(req), req.body)));
+hotelierRouter.delete('/hotels/:hotelId/channels/channex', requireHotelRole('owner'), async (req, res) => res.json(await disconnectChannex(H(req), U(req))));
+hotelierRouter.get('/hotels/:hotelId/channels/channex/catalog', requireHotelRole('owner'), async (req, res) => res.json(await channexCatalog(H(req))));
+hotelierRouter.put('/hotels/:hotelId/channels/channex/mapping', requireHotelRole('owner'), async (req, res) => res.json(await saveChannexMapping(H(req), U(req), req.body)));
+hotelierRouter.post('/hotels/:hotelId/channels/channex/create-missing', requireHotelRole('owner'), cxLimit(), async (req, res) =>
+  res.json(await createMissingInChannex(H(req), U(req))),
+);
+hotelierRouter.post('/hotels/:hotelId/channels/channex/full-sync', requireHotelRole('manager'), cxLimit(), async (req, res) => res.json(await channexFullSync(H(req), U(req))));
+hotelierRouter.post('/hotels/:hotelId/channels/channex/ota-link', requireHotelRole('owner'), cxLimit(), async (req, res) =>
+  res.json(await channexChannelsUrl(H(req), req.hotelUser!.name ?? req.hotelUser!.email ?? 'owner')),
+);
+hotelierRouter.post('/hotels/:hotelId/channels/channex/retry-bookings', requireHotelRole('manager'), cxLimit(), async (req, res) =>
+  res.json(await retryChannexBookings(H(req))),
+);
 
 // ---- Export --------------------------------------------------------------------
 hotelierRouter.get('/hotels/:hotelId/reservations.csv', requireHotelRole('frontdesk'), async (req, res) => {

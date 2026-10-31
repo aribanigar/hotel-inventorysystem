@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { AppError, isAppError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { availabilityRouter } from './routes/availability.js';
+import { channexWebhookRouter } from './routes/channexWebhook.js';
 import { checkoutRouter } from './routes/checkout.js';
 import { extranetRouter } from './routes/extranet.js';
 import { hotelierRouter } from './routes/hotelier.js';
@@ -42,6 +43,8 @@ export function createApp() {
   app.use('/api/v1/payments', paymentsRouter);
   // QloApps-Channel-Manager-compatible PMS API (reads its own raw JSON body).
   app.use('/api/cm_api', qloCmApiRouter);
+  // Channex booking webhooks (HMAC over the raw body).
+  app.use('/api/v1/channex', channexWebhookRouter);
 
   app.use(express.json({ limit: '100kb' }));
   app.use('/api/v1/checkout', checkoutRouter);

@@ -12,6 +12,7 @@ import { sha256Hex } from '../lib/crypto.js';
 import { addDays, todayIn } from '../lib/dates.js';
 import { AppError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
+import { queueChannexFullSync } from '../channels/channex/ari.js';
 import { enqueueForSubscribers } from '../outbox/outbox.js';
 import { audit } from './audit.js';
 
@@ -431,6 +432,8 @@ export async function fullSync(hotelId: string, userId: string) {
       changes: plans.map((p) => ({ roomTypeId: p.room_type_id, ratePlanId: p.rate_plan_id, from: today, to })),
       cause: 'full_sync',
     });
+    // Channex: resend the whole horizon, not only nights that differ from the last push.
+    await queueChannexFullSync(client, hotelId);
     await audit(client, { hotelId, userId, action: 'ARI_UPDATE', summary: `Full sync queued to ${queued} channel(s), ${today} to ${to}` });
     return { channelsQueued: queued };
   });

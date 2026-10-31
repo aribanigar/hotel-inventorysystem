@@ -47,7 +47,7 @@ them at a throwaway database):
 TEST_DATABASE_URL=postgres://postgres@localhost:5432/hotel_inventory_test npm test
 ```
 
-The 55 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
+The 71 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
 pushes, atomic rejection of unmapped codes, holds and decrements, price changes,
 restrictions, **10 buyers racing for the last room (exactly one wins)**, double-click
 idempotency, expiry, customer release, payment confirmation and CM notification, wrong
@@ -70,6 +70,50 @@ hotels redirected to their CM, and **a walk-in racing 5 online buyers for the la
 | **Reset availability**: recompute rooms left = total rooms minus every booking | Setup |
 | **Full sync** to every channel, **retry failed**, live sync health per channel | Channels tab |
 | Bookings with channel name, overbooked flag and **CSV export** | Bookings tab |
+
+### Connect to Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda, Airbnb... directly through Channex (recommended)
+
+[Channex](https://channex.io) is the white-label channel manager API that the QloApps
+Channel Manager itself uses for Booking.com, Expedia and Agoda (see
+[docs/QLOAPPS_CHANNEL_MANAGER.md](docs/QLOAPPS_CHANNEL_MANAGER.md), section 8). We connect
+to it directly: one hop fewer, a published API, and the hotel sees our brand.
+
+Server setup (once, by you as the platform):
+
+1. Get a Channex account (staging first) and an API key. Set `CHANNEX_BASE_URL` and
+   `CHANNEX_API_KEY`.
+2. Create a Channex webhook (global, event mask `booking,booking_unmapped_room,booking_unmapped_rate,non_acked_booking,sync_error,disconnect_channel`)
+   pointing at `https://<your-host>/api/v1/channex/webhook`, with header
+   `X-Channex-Webhook-Secret: <CHANNEX_WEBHOOK_SECRET>`; optionally enable HMAC signing
+   and set `CHANNEX_WEBHOOK_HMAC_SECRET`.
+3. Pass Channex's PMS certification on staging, then switch `CHANNEX_BASE_URL` to the
+   production host (`https://app.channex.io`) with the production key.
+
+Per hotel (owner, extranet *Channels* > *Channex*): **Create Channex property** (or link an
+existing one) > **Create missing in Channex** (or map by hand) > **Full sync** > **Connect
+OTAs in Channex**, which opens Channex's own channel screen for that property, where the
+hotel signs in to Booking.com, Expedia, Agoda, MakeMyTrip/Goibibo, Airbnb and the rest.
+
+How it works:
+- **Deltas, not timers.** Every ARI change marks its nights dirty in the same transaction.
+  The push loop compares current values with what Channex last accepted and sends only
+  nights that differ, merged into ranges: at most one availability call and one
+  restrictions call per property per push, at most one push every 6 s per property
+  (Channex allows 10 + 10 per minute). A full sync is exactly 2 calls for 500 days.
+- **Backoff.** On 429, 5xx or network errors the property pauses 1 minute, doubling to
+  15 minutes; the changes wait and are never dropped.
+- **Bookings.** The webhook triggers a pull of Channex's revision feed (also polled every
+  2 minutes). Each revision is applied in one transaction with the same locks as walk-ins,
+  then acknowledged. A redelivered revision is acknowledged without booking twice.
+  Modified bookings move nights; cancellations give them back; a booking for a sold-out
+  night is recorded and flagged **Overbooked**. A revision we can't apply (unmapped room)
+  is not acknowledged, shows under "bookings stuck", and later revisions of the same
+  booking wait for it.
+- **Not sent** (Channex has no field): days-before-arrival rules and extra adult/child
+  prices. We still apply them on our own checkout.
+
+Local try-out without an account: `npm run dev:mock-channex`, then run the API with
+`CHANNEX_BASE_URL=http://localhost:4194 CHANNEX_API_KEY=dev-channex-key`.
 
 ### Connect to Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda, Airbnb... via the QloApps Channel Manager
 
@@ -173,6 +217,7 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 | `POST /api/v1/payments/razorpay/webhook` | Razorpay `payment.captured` / `order.paid` (signature checked). **Configure this too**, because it is the only path that survives the guest's phone losing signal |
 | `GET /api/v1/hotels/:hotelId/availability?checkIn&checkOut&rooms&roomTypeId` | Live availability for listing pages (no locks) |
 | `POST /api/v1/webhooks/channel-manager` | Inbound ARI from STAAH / AxisRooms (see below) |
+| `POST /api/v1/channex/webhook` | Channex booking events (shared-secret header and/or HMAC); triggers a feed pull |
 | `PUT /api/v1/extranet/hotels/:hotelId/ari` | Houseboat / boutique owner updates (Bearer `EXTRANET_ADMIN_TOKEN`) |
 | `GET /healthz` | Liveness + DB check |
 
@@ -223,10 +268,13 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 - [ ] Alert on log lines containing `ALERT:` (refunds needed, dead-lettered deliveries) and on `inventory_holds.status = 'NEEDS_REFUND'`.
 - [ ] Keep `EXTRANET_ADMIN_TOKEN` for ops scripts only; hotel staff sign in with their own accounts.
 - [ ] Serve over HTTPS so the session cookie gets the `Secure` flag (automatic with `NODE_ENV=production`).
+- [ ] Channex: pass PMS certification on staging, then set the production `CHANNEX_BASE_URL` and key, and the webhook secret(s).
 
 ## Not built yet
 
-- Direct OTA connectors (without a channel manager in between) each need partner certification.
+- Direct OTA connectors without Channex in between (each OTA needs its own certification).
+- Channex certification itself (the live review is done by Channex on a call) and a test
+  against the real Channex staging server.
 - Automated Razorpay refunds for `NEEDS_REFUND` (currently flagged for ops).
 - Admin UI for creating hotels, room types and channel mappings (done via SQL or seed today).
 - Physical room numbers, room assignment and housekeeping status.

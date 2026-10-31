@@ -350,3 +350,22 @@ dialog.sheet.wide { width: min(680px, 100vw); }
     position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 6; box-shadow: var(--shadow); min-height: 48px;
   }
 }
+
+/* ---- Channex panel ---------------------------------------------------------- */
+.stack-xs { display: grid; gap: 4px; }
+.cx-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.cx-step { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+.cx-step .toolbar-actions { margin-top: 6px; }
+.cx-num { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: var(--surface); border: 1px solid var(--line); color: var(--ink-2); }
+.cx-step.done .cx-num { background: var(--free); border-color: var(--free); color: #fff; }
+.cx-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
+.cx-recent summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.cx-recent[open] summary { margin-bottom: 8px; }
+.cx-map { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.cx-map-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px; align-items: center; font-size: 14px; }
+.cx-map-row.sub { padding-left: 14px; }
+.cx-map-row select { width: 100%; min-width: 0; }
+#cx-mapping h3 { font-size: 15px; margin: 0 0 8px; }
+@media (max-width: 560px) {
+  .cx-map-row { grid-template-columns: 1fr; gap: 4px; }
+}

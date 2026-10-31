@@ -14,15 +14,13 @@
  *    (theirs: hard-coded to 0)
  *  - OTA bookings go through the same row locks as walk-ins and website checkouts
  */
-import { randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { pool, withTransaction } from '../db/pool.js';
 import { addDays, todayIn } from '../lib/dates.js';
 import { AppError } from '../lib/errors.js';
 import { HttpCallError, requestJson } from '../lib/http.js';
-import { logger } from '../lib/logger.js';
 import { decimalToMinor } from '../lib/money.js';
-import { enqueueForSubscribers } from '../outbox/outbox.js';
+import { applyOtaBooking, type OtaBooking, type OtaLine } from './otaBookings.js';
 
 export const QLO_COMPAT_VERSION = '1.7.0.0';
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -275,128 +273,44 @@ export async function processCmBooking(accountId: string, input: CmBookingInput)
     ).rows[0];
     if (!hotel) throw new AppError('VALIDATION_ERROR', 'Please provide a valid id_property.');
     if (hotel.inventory_source !== 'EXTRANET') throw new AppError('CONFLICT', 'This property is not managed by this PMS');
-    const today = todayIn(hotel.timezone);
 
-    // Serialise all notifications for the same CM booking (advisory lock on its id).
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`cm:${accountId}:${cmId}`]);
-    const existing = (
-      await client.query(
-        `SELECT * FROM reservations WHERE cm_account_id = $1 AND cm_booking_id = $2 AND hotel_id = $3 ORDER BY check_in, room_type_id FOR UPDATE`,
-        [accountId, cmId, hotel.id],
-      )
-    ).rows;
-    const live = existing.filter((r) => r.status === 'CONFIRMED' || r.status === 'CHECKED_IN');
-
-    const cancelAll = async (to: 'CANCELLED') => {
-      for (const r of live) {
-        const start = r.check_in > today ? r.check_in : today;
-        if (!r.released_from && start < r.check_out) {
-          await client.query(
-            `UPDATE daily_inventory SET allotment = allotment + $4, updated_at = now()
-              WHERE room_type_id = $1 AND stay_date >= $2 AND stay_date < $3`,
-            [r.room_type_id, start, r.check_out, r.rooms],
-          );
-          await enqueueForSubscribers(client, hotel.id, 'ARI_CHANGED', {
-            changes: [{ roomTypeId: r.room_type_id, ratePlanId: r.rate_plan_id, from: start, to: r.check_out }],
-            cause: 'cm_cancel',
-          });
-        }
-        await client.query(`UPDATE reservations SET status = $2, released_from = COALESCE(released_from, $3::date), updated_at = now() WHERE id = $1`, [
-          r.id,
-          to,
-          start < r.check_out ? start : null,
-        ]);
-        await client.query(`INSERT INTO reservation_events (reservation_id, from_status, to_status, remark) VALUES ($1, $2, $3, $4)`, [
-          r.id,
-          r.status,
-          to,
-          `Channel manager: ${status}`,
-        ]);
+    // Resolve the CM's room lines to our room types before touching inventory.
+    const lines: OtaLine[] = [];
+    if (status === 'new' || status === 'modified' || status === 'completed') {
+      for (const line of input.room_bookings ?? []) {
+        const checkIn = String(line.check_in_date ?? '').slice(0, 10);
+        const checkOut = String(line.check_out_date ?? '').slice(0, 10);
+        const rooms = Math.max(1, Math.min(20, Number(line.number_of_rooms ?? 1) || 1));
+        if (!DATE.test(checkIn) || !DATE.test(checkOut) || checkOut <= checkIn) throw new AppError('VALIDATION_ERROR', 'Invalid check-in/check-out dates');
+        const rt = (await client.query('SELECT id FROM room_types WHERE pms_id = $1 AND hotel_id = $2', [Number(line.id_room_type), hotel.id])).rows[0];
+        if (!rt) throw new AppError('VALIDATION_ERROR', 'Requested room(s) not available.');
+        const ratePlan = (await client.query('SELECT id FROM rate_plans WHERE room_type_id = $1 AND is_default LIMIT 1', [rt.id])).rows[0];
+        const occ = roomOccupancy(line.rooms);
+        lines.push({ roomTypeId: rt.id, ratePlanId: ratePlan?.id ?? null, checkIn, checkOut, rooms, adults: occ.adults, children: occ.children });
       }
-    };
-
-    if (status === 'cancelled' || status === 'refunded') {
-      if (!existing.length) throw new AppError('NOT_FOUND', 'Referenced booking not found.');
-      await cancelAll('CANCELLED');
-      return bookingResponse(client, accountId, cmId, hotel);
     }
-
-    if (status === 'completed' && live.length) {
-      return bookingResponse(client, accountId, cmId, hotel); // payment confirmation only
-    }
-
-    // new (or a re-sent new) / modified: replace the live rows with the requested ones.
-    if (live.length) await cancelAll('CANCELLED');
-
-    const lines = input.room_bookings ?? [];
-    if (!lines.length) throw new AppError('VALIDATION_ERROR', 'Requested room(s) not available.');
-    const totalMinor =
-      input.price_details?.total_price_with_tax !== undefined ? decimalToMinor(input.price_details.total_price_with_tax) : null;
     const g = input.guest_detail ?? {};
-    const guestName = `${g.firstname ?? ''} ${g.lastname ?? ''}`.trim() || 'OTA guest';
-    const otaName = String(input.source || input.business_source || 'Channel manager').slice(0, 120);
-
-    // Lock order: room type, then date (same as every other path).
-    const sorted = [...lines].sort((a, b) => String(a.id_room_type).localeCompare(String(b.id_room_type)) || String(a.check_in_date).localeCompare(String(b.check_in_date)));
-    let first = true;
-    for (const line of sorted) {
-      const checkIn = String(line.check_in_date ?? '').slice(0, 10);
-      const checkOut = String(line.check_out_date ?? '').slice(0, 10);
-      const rooms = Math.max(1, Math.min(20, Number(line.number_of_rooms ?? 1) || 1));
-      if (!DATE.test(checkIn) || !DATE.test(checkOut) || checkOut <= checkIn) throw new AppError('VALIDATION_ERROR', 'Invalid check-in/check-out dates');
-      const rt = (
-        await client.query('SELECT id, base_occupancy FROM room_types WHERE pms_id = $1 AND hotel_id = $2', [Number(line.id_room_type), hotel.id])
-      ).rows[0];
-      if (!rt) throw new AppError('VALIDATION_ERROR', 'Requested room(s) not available.');
-      const ratePlan = (await client.query('SELECT id FROM rate_plans WHERE room_type_id = $1 AND is_default LIMIT 1', [rt.id])).rows[0];
-
-      const inv = await client.query<{ stay_date: string; available: number }>(
-        `SELECT stay_date, available FROM daily_inventory WHERE room_type_id = $1 AND stay_date >= $2 AND stay_date < $3 ORDER BY stay_date FOR UPDATE`,
-        [rt.id, checkIn, checkOut],
-      );
-      const nights = Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000);
-      const overbooked = inv.rows.length < nights || inv.rows.some((n) => n.available < rooms);
-      // Take the rooms. An OTA booking cannot be refused: if a night is short we still
-      // record the booking (never letting allotment go negative), flag it and alert.
-      await client.query(
-        `UPDATE daily_inventory SET allotment = GREATEST(allotment - $4, 0), updated_at = now()
-          WHERE room_type_id = $1 AND stay_date >= $2 AND stay_date < $3`,
-        [rt.id, checkIn, checkOut, rooms],
-      );
-      const occ = roomOccupancy(line.rooms);
-      const created = (
-        await client.query(
-          `INSERT INTO reservations
-             (reference, hotel_id, room_type_id, rate_plan_id, source, source_detail, check_in, check_out, rooms, adults, children,
-              guest_name, guest_phone, guest_email, amount_minor, currency, notes, cm_account_id, cm_booking_id, overbooked, external_payload)
-           VALUES ($1,$2,$3,$4,'CHANNEL_MANAGER',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
-           RETURNING id, pms_id`,
-          [
-            // Unique per row: a modified booking creates new rows while old ones stay as history.
-            `CM-${cmId.replace(/[^A-Za-z0-9]/g, '').slice(0, 20)}-${randomBytes(3).toString('hex').toUpperCase()}`,
-            hotel.id, rt.id, ratePlan?.id ?? null, otaName, checkIn, checkOut, rooms,
-            Math.max(1, occ.adults || 2 * rooms), occ.children,
-            guestName.slice(0, 120), g.phone ? String(g.phone).slice(0, 40) : null, g.email ? String(g.email).slice(0, 254) : null,
-            first ? totalMinor : null, String(input.currency ?? hotel.currency).trim().slice(0, 3).toUpperCase(),
-            input.remark ? String(input.remark).slice(0, 1000) : null, accountId, cmId, overbooked, JSON.stringify(input),
-          ],
-        )
-      ).rows[0];
-      first = false;
-      await client.query(`INSERT INTO reservation_events (reservation_id, from_status, to_status, remark) VALUES ($1, NULL, 'CONFIRMED', $2)`, [
-        created.id,
-        `${otaName} via channel manager${overbooked ? ' (OVERBOOKED)' : ''}`,
-      ]);
-      await client.query(
-        `INSERT INTO extranet_audit (hotel_id, user_id, action, summary, details) VALUES ($1, NULL, 'RESERVATION_CREATE', $2, $3::jsonb)`,
-        [hotel.id, `${otaName}: ${rooms} room(s), ${checkIn} to ${checkOut}, ${guestName}${overbooked ? ' - OVERBOOKED, needs action' : ''}`, JSON.stringify({ cmId, status })],
-      );
-      if (overbooked) logger.error({ hotelId: hotel.id, cmId, roomTypeId: rt.id, checkIn, checkOut }, 'ALERT: OTA booking arrived for a sold-out night (overbooked)');
-      await enqueueForSubscribers(client, hotel.id, 'ARI_CHANGED', {
-        changes: [{ roomTypeId: rt.id, ratePlanId: ratePlan?.id ?? null, from: checkIn, to: checkOut }],
-        cause: 'cm_booking',
-      });
-    }
+    const { result } = await applyOtaBooking(
+      client,
+      hotel,
+      { kind: 'QLO_CM', accountId, bookingId: cmId },
+      {
+        status: status === 'refunded' ? 'cancelled' : (status as OtaBooking['status']),
+        remark: `Channel manager: ${status}`,
+        lines,
+        guestName: `${g.firstname ?? ''} ${g.lastname ?? ''}`.trim() || 'OTA guest',
+        guestPhone: g.phone ?? null,
+        guestEmail: g.email ?? null,
+        totalMinor: input.price_details?.total_price_with_tax !== undefined ? decimalToMinor(input.price_details.total_price_with_tax) : null,
+        currency: String(input.currency ?? hotel.currency),
+        otaName: String(input.source || input.business_source || 'Channel manager'),
+        notes: input.remark ?? null,
+        referenceCode: cmId,
+        via: 'via channel manager',
+        payload: input,
+      },
+    );
+    if (result === 'not_found') throw new AppError('NOT_FOUND', 'Referenced booking not found.');
     return bookingResponse(client, accountId, cmId, hotel);
   });
 }

@@ -187,3 +187,93 @@ Two things the CM screens show that we copy only partly, on purpose:
 | **Bookings**: Booking id, Guest, Channel name, Room type, Duration, Status, Booking date, Synced, Export | OTA bookings and whether they reached the PMS | Bookings tab shows OTA name, status, **Overbooked** flag, and exports CSV; OTA bookings are stored the moment the CM sends them |
 | **Revenue Management**: PriceLabs (prices, min stay, multi-unit, check-in/out restrictions) | Dynamic pricing pushes prices into the CM | Not built. Our bulk update API takes everything PriceLabs sets, so it could plug in later |
 | **Configurations**: "Days to set inventory & rates data" (max 730), "Availability update mode outside range", **Reset availability**; "data checked once every 24 hours" | Rolling window and a repair button | **Built**: rolling selling window (hourly, not daily) and Reset availability (total rooms minus all bookings) |
+
+## 8. What the QloApps Channel Manager uses to reach each OTA
+
+Researched 2026-10-31 from QloApps' own per-channel setup guides (linked from
+qloapps.com/qloapps-channel-manager), Channex's public docs and its integrations directory.
+
+**Finding: QloApps Channel Manager does not hold its own OTA certifications for the big
+OTAs. Its guides name Channex.io as the "connectivity partner" for Booking.com, Expedia and
+Agoda.** Channex is a white-label channel manager API sold only to PMS vendors. The other
+channels either show "QloApps" in the OTA's own extranet or need no extranet step, which
+fits a white-label setup on Channex's certified links. Channex lists every one of them,
+Bakuun included (it is in Channex's channel API examples).
+
+```
+ Hotel PMS ──push_ari──▶ channels.qloapps.com ──REST/JSON──▶ Channex ──certified XML/API──▶ OTA
+ (QloApps)  ◀─cm_api─── (Webkul UI + billing) ◀─revisions── (holds the   ◀─reservations── extranet
+                                                              OTA links)
+```
+
+### Per channel: what the hotel does at the OTA, and who the OTA sees
+
+| Channel | Step in the OTA's extranet (from the QloApps guide) | Provider the OTA sees | Fields entered in QloApps CM |
+|---|---|---|---|
+| **Booking.com** | Account > Connectivity Provider > search **"Channex"** > accept the XML Service Agreement > wait for approval | **Channex** ("Channex is our connectivity partner for Booking.com Channel") | Property ID, currency, conversion factor |
+| **Expedia** | Rooms and Rates > Connectivity Settings > choose **Channex** for both connectivity and booking | **Channex** | Property ID, min stay type (arrival or stay-through), currency |
+| **Agoda** | Direct Agoda contract, then YCS > Settings > Property Settings > enable channel manager mode > pick **Channex** | **Channex** | Property ID, currency |
+| **MakeMyTrip / Goibibo** (one connection, InGo-MMT) | Goibibo extranet > Property > Setting > pick **"QloApps"** as channel manager > copy the **access token** | **QloApps** | Property ID (Hotel code), bearer access token, currency, extra adult and child price per rate plan |
+| **Trip.com / Ctrip** | Rates & Availability > Connectivity Settings > search **"QloApps"** > Connect | **QloApps** | Property ID, currency |
+| **Despegar** | General Settings > My Connections > Create Integration > Channel Manager > pick **"QloApps"** > copy the activation code | **QloApps** | Activation code, property ID |
+| **Airbnb** | None. OAuth: "Authorize with Airbnb Account", then accept Airbnb's terms | The CM's Airbnb app | Listing ID, min stay type |
+| **Hostelworld** | Email Hostelworld support, receive an API password | n/a | Property ID, property password |
+| **Yatra, Bakuun, HyperGuest** | None documented (account on the OTA only) | n/a | Property ID, currency |
+| **PriceLabs** (pricing, not an OTA) | PriceLabs > Connect via PMS > pick "QloApps Channel Manager" | QloApps | PriceLabs email; hotel latitude, longitude, city, country |
+
+### Why we think the CM itself is built on Channex
+
+- The guides say so directly for Booking.com, Expedia and Agoda.
+- The CM's rate plan form matches Channex's rate plan model field for field:
+  - rate mode "auto, manual or derived" (Channex `rate_mode`: manual, derived, auto, cascade)
+  - price model "occupancy-wise or room-wise" (Channex `sell_mode`: per_person, per_room)
+  - children fee and infant fee (Channex `children_fee`, `infant_fee`)
+  - per-channel "Min Stay Type: arrival or stay through" (Channex `min_stay_type`)
+- Its restriction screen (stop sell, CTA, CTD, min/max stay on arrival and stay-through)
+  is the same set as Channex's `POST /restrictions` fields.
+- Channex's own MakeMyTrip guide asks for the same two fields (Hotel ID plus the access
+  token MakeMyTrip gives the provider).
+- Channex's channel list covers all of QloApps' portals, including MakeMyTrip, Yatra,
+  Despegar, HyperGuest, Bakuun, Trip.com, Hostelworld, Airbnb and Google Hotels.
+
+**Not confirmed:**
+- whether "QloApps" in the MakeMyTrip, Trip.com and Despegar extranets is a Channex
+  white-label listing or a direct Webkul certification.
+
+### What this means for us
+
+| Route | Hops | Cost (public list prices) | Notes |
+|---|---|---|---|
+| **Our system > QloApps CM > Channex > OTA** (built, `src/channels/qloappsCm.ts`) | 3 | QloApps CM plan per property (third-party listings say about $30 per month; check with Webkul) | Webkul must allow a non-QloApps PMS. Its contract is read from code, not published. |
+| **Our system > Channex > OTA** (built, `src/channels/channex/`) | 2 | WhiteLabel: $130 per month platform fee + $7 per hotel per month ($4 at 2,000+ hotels); no setup fee | Public REST API and docs, staging sandbox, certification test for PMS partners. Same OTA list. We can show our own brand. |
+| **Our system > OTA directly** | 1 | Free API, but each OTA needs its own certification | Booking.com, Expedia and Agoda now take new connectivity partners slowly. Only worth it later for one or two key OTAs (MakeMyTrip for India). |
+
+Channex API pieces a direct connector would use:
+- **ARI:** `POST /api/v1/availability` (rooms left per room type per date) and
+  `POST /api/v1/restrictions` (rate, stop_sell, closed_to_arrival, closed_to_departure,
+  min_stay_arrival, min_stay_through, max_stay).
+  - Both take date ranges and a `days` weekday filter, so our outbox deltas map almost
+    one to one.
+  - Channex has no max-advance restriction; we keep enforcing that on our own website only.
+- **Bookings:** the `GET /api/v1/booking_revisions/feed` poll, plus a webhook. Each
+  revision is `new`, `modified` or `cancelled`. We store it, then
+  `POST /api/v1/booking_revisions/:id/ack`. Channex advises keeping the feed poll every
+  15 to 20 minutes as a backup to webhooks.
+- **Derived plans:** Channex supports parent plans with percent or amount rules and
+  `inherit_*` restriction flags, which match our derived rate plans.
+
+Channex limits: 10 restriction calls and 10 availability calls per minute per property;
+full sync = 2 calls for 500 days; certification rejects full syncs on a timer and per-date
+calls; it requires a queue, 429/5xx backoff, webhook + acknowledgement and a mapping layer.
+Channex also lowers availability itself when a booking arrives (cannot be turned off), so
+we always push our own figure after applying the booking.
+
+**Recommendation (now built):** connect to Channex directly as a white-label PMS partner. It removes
+one hop and one subscription, uses a published API instead of one read from code, and
+reaches the same OTAs (Booking.com, Expedia, Agoda, MakeMyTrip/Goibibo, Airbnb, Trip.com
+and the rest). Keep the QloApps CM connector for hotels that already pay for it.
+
+Sources: qloapps.com setup guides for Booking.com, Expedia, Agoda, Goibibo & MakeMyTrip,
+Trip.com and Ctrip, Despegar, Airbnb, Hostelworld, HyperGuest, Bakuun, Yatra and PriceLabs;
+docs.channex.io (rate plans, ARI, bookings, MakeMyTrip mapping guide);
+channex.io/integrations; channex.io/pricing.

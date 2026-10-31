@@ -837,13 +837,17 @@ $('#plan-save').addEventListener('click', async () => {
 async function loadChannels() {
   const body = $('#channels-body');
   try {
-    renderChannels(await api('GET', `/hotels/${state.hotel.id}/channels`));
+    const [c, cx] = await Promise.all([
+      api('GET', `/hotels/${state.hotel.id}/channels`),
+      api('GET', `/hotels/${state.hotel.id}/channels/channex`),
+    ]);
+    renderChannels(c, cx);
   } catch (err) {
     if (err.status !== 401) body.replaceChildren(h('div', { class: 'empty' }, explain(err)));
   }
 }
 
-function renderChannels(c) {
+function renderChannels(c, cx) {
   const owner = role() >= RANK.owner;
   const cm = c.qloappsChannelManager;
   const actions = h('section', { class: 'card' },
@@ -878,7 +882,216 @@ function renderChannels(c) {
         ch.lastError ? h('p', { class: 'muted small' }, `Last error: ${ch.lastError}`) : null))
     : [h('section', { class: 'card' }, h('p', { class: 'muted' }, 'No direct partner channels yet. Partner websites and channel managers like STAAH or AxisRooms are connected by your administrator.'))];
 
-  $('#channels-body').replaceChildren(actions, cmCard, ...others);
+  $('#channels-body').replaceChildren(actions, channexCard(cx), cmCard, ...others);
+}
+
+// ---- Channex: direct connection to the OTAs ----------------------------------
+const CX_OTAS = 'Booking.com, Expedia, Agoda, MakeMyTrip/Goibibo, Airbnb, Trip.com, Despegar, Yatra, Hostelworld, HyperGuest, Google Hotels and 70+ more.';
+
+function channexCard(cx) {
+  const owner = role() >= RANK.owner;
+  const hid = state.hotel.id;
+  const attention = cx.connected && (cx.consecutiveFailures > 0 || cx.failedBookings.length > 0 || cx.unmapped.rooms + cx.unmapped.ratePlans > 0);
+  const status = !cx.connected
+    ? h('span', { class: 'muted' }, 'Not connected')
+    : h('span', { class: attention ? 'bad' : 'ok' }, attention ? 'Needs attention' : 'Connected');
+  const head = h('div', { class: 'card-head' },
+    h('div', {}, h('h2', {}, 'Channex ', h('span', { class: 'badge' }, 'Recommended')),
+      h('p', { class: 'muted' }, `Direct to ${CX_OTAS}`)),
+    status);
+
+  if (!cx.configured) {
+    return h('section', { class: 'card' }, head,
+      h('p', { class: 'muted small' }, 'Not set up on this server yet. Your administrator adds the Channex API key (CHANNEX_API_KEY).'));
+  }
+
+  if (!cx.connected) {
+    if (!owner) return h('section', { class: 'card' }, head, h('p', { class: 'muted small' }, 'The hotel owner can connect this.'));
+    const out = h('div', {});
+    const link = h('form', { class: 'stack-sm', novalidate: true },
+      h('label', {}, 'Already have a Channex property? Paste its ID',
+        h('input', { name: 'propertyId', placeholder: 'e.g. 716305c4-561a-4561-a187-7f5b8aeb5920', autocomplete: 'off', spellcheck: 'false' })),
+      h('div', { class: 'toolbar-actions' },
+        h('button', { type: 'submit', class: 'btn btn-ghost' }, 'Link existing property')));
+    const connect = async (body, btn) => {
+      btn.disabled = true;
+      try {
+        await api('POST', `/hotels/${hid}/channels/channex`, body);
+        toast('Connected to Channex. Next: map your rooms and rates.');
+        loadChannels();
+      } catch (err) {
+        if (err.status !== 401) out.replaceChildren(h('p', { class: 'form-error' }, explain(err)));
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    link.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const id = link.propertyId.value.trim();
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return out.replaceChildren(h('p', { class: 'form-error' }, 'That does not look like a Channex property ID.'));
+      connect({ mode: 'link', propertyId: id }, link.querySelector('button'));
+    });
+    const createBtn = h('button', { type: 'button', class: 'btn btn-primary' }, 'Create Channex property');
+    createBtn.addEventListener('click', () => connect({ mode: 'create' }, createBtn));
+    return h('section', { class: 'card' }, head,
+      h('p', { class: 'muted small' }, 'One connection for every OTA. Rooms, prices and restrictions go out within seconds of any change here, and OTA bookings come straight into your calendar.'),
+      h('div', { class: 'toolbar-actions' }, createBtn),
+      link, out);
+  }
+
+  const unmapped = cx.unmapped.rooms + cx.unmapped.ratePlans;
+  const busy = async (btn, fn) => {
+    btn.disabled = true;
+    try {
+      await fn();
+    } catch (err) {
+      if (err.status !== 401) toast(explain(err), 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  const btn = (label, cls, fn) => {
+    const b = h('button', { type: 'button', class: `btn ${cls}` }, label);
+    b.addEventListener('click', () => busy(b, fn));
+    return b;
+  };
+
+  const createMissing = btn('Create missing in Channex', 'btn-primary', async () => {
+    const r = await api('POST', `/hotels/${hid}/channels/channex/create-missing`, {});
+    toast(r.roomTypes + r.ratePlans ? `Created ${r.roomTypes} room type(s) and ${r.ratePlans} rate plan(s) in Channex.` : 'Everything is already mapped.');
+    loadChannels();
+  });
+  const fullSync = btn('Full sync to Channex', 'btn-primary', async () => {
+    const r = await api('POST', `/hotels/${hid}/channels/channex/full-sync`, {});
+    toast(`Sending ${r.days} days of rooms, prices and restrictions.`);
+    setTimeout(loadChannels, 2500);
+  });
+  const openOtas = h('button', { type: 'button', class: 'btn btn-primary' }, 'Connect OTAs in Channex');
+  openOtas.addEventListener('click', () => busy(openOtas, async () => {
+    // Open the tab now (inside the click) so pop-up blockers allow it, then point it at the one-time link.
+    const w = window.open('', '_blank');
+    try {
+      const r = await api('POST', `/hotels/${hid}/channels/channex/ota-link`, {});
+      if (w) {
+        w.opener = null;
+        w.location.href = r.url;
+      } else {
+        window.location.href = r.url;
+      }
+    } catch (err) {
+      if (w) w.close();
+      throw err;
+    }
+  }));
+
+  const step = (n, done, title, text, ...actions) => h('li', { class: 'cx-step' + (done ? ' done' : '') },
+    h('div', { class: 'cx-num', 'aria-hidden': 'true' }, done ? '\u2713' : String(n)),
+    h('div', { class: 'stack-xs' }, h('b', {}, title), h('span', { class: 'muted small' }, text),
+      actions.length ? h('div', { class: 'toolbar-actions' }, ...actions) : null));
+
+  const mappingBox = h('div', { id: 'cx-mapping' });
+  const editMapping = btn(unmapped ? 'Map manually' : 'Edit mapping', 'btn-ghost', () => openChannexMapping(cx, mappingBox));
+
+  const steps = h('ol', { class: 'cx-steps' },
+    step(1, unmapped === 0, 'Map rooms and rates',
+      unmapped ? `${unmapped} room type(s) or rate plan(s) not linked to Channex yet.` : 'Every room type and rate plan is linked.',
+      ...(owner ? [unmapped ? createMissing : null, editMapping].filter(Boolean) : [])),
+    step(2, Boolean(cx.lastFullSyncAt), 'Send everything once',
+      cx.lastFullSyncAt ? `Last full sync ${fmtWhen(cx.lastFullSyncAt)}. After that only changes are sent.` : 'Sends 500 days of rooms, prices and restrictions in two calls.',
+      fullSync),
+    step(3, false, 'Connect your OTAs',
+      'Opens Channex for this property. Pick Booking.com, Expedia, Agoda, MakeMyTrip and others, sign in to each and map rooms. Link expires in 15 minutes.',
+      ...(owner ? [openOtas] : [])));
+
+  const kv = h('div', { class: 'kv' },
+    h('div', {}, h('b', {}, fmtWhen(cx.lastPushAt)), h('span', {}, 'last update sent')),
+    h('div', {}, h('b', {}, cx.pendingChanges), h('span', {}, 'changes waiting')),
+    h('div', {}, h('b', { class: cx.consecutiveFailures ? 'bad' : '' }, cx.consecutiveFailures), h('span', {}, 'failed attempts in a row')),
+    h('div', {}, h('b', { class: cx.failedBookings.length ? 'bad' : '' }, cx.failedBookings.length), h('span', {}, 'bookings stuck')));
+
+  const problems = [];
+  if (cx.lastPushError) problems.push(h('p', { class: 'form-error' }, `Last error: ${cx.lastPushError}. Retrying automatically.`));
+  if (Array.isArray(cx.lastWarnings) && cx.lastWarnings.length) {
+    problems.push(h('p', { class: 'muted small' }, `Channex skipped ${cx.lastWarnings.length} value(s) in the last update. Check prices and restrictions on those dates.`));
+  }
+  let stuck = null;
+  if (cx.failedBookings.length) {
+    const retry = btn('Retry bookings', 'btn-ghost', async () => {
+      const r = await api('POST', `/hotels/${hid}/channels/channex/retry-bookings`, {});
+      toast(r.stillFailed ? `${r.stillFailed} booking(s) still need attention.` : 'All bookings are in.');
+      loadChannels();
+    });
+    stuck = h('div', { class: 'stack-sm' },
+      h('p', { class: 'bad' }, 'OTA bookings that could not be added. Fix the mapping, then retry. Channex keeps them until we confirm.'),
+      h('ul', { class: 'cx-list' }, ...cx.failedBookings.map((f) => h('li', {},
+        h('b', {}, `${f.ota_name || 'OTA'} (${f.status})`), ' ', h('span', { class: 'muted small' }, `${f.error} · ${fmtWhen(f.received_at)}`)))),
+      h('div', { class: 'toolbar-actions' }, retry));
+  }
+  const recent = cx.recentBookings.length
+    ? h('details', { class: 'cx-recent' }, h('summary', {}, `Recent OTA bookings (${cx.recentBookings.length})`),
+        h('ul', { class: 'cx-list' }, ...cx.recentBookings.map((b) => h('li', {},
+          h('b', {}, b.ota_name || 'OTA'), ' ', h('span', { class: 'muted small' }, `${b.status}: ${b.result} · ${fmtWhen(b.applied_at)}${b.acked_at ? '' : ' · confirming'}`)))))
+    : null;
+
+  const disconnect = owner
+    ? btn('Disconnect', 'btn-danger', async () => {
+        if (!window.confirm('Stop sending updates to Channex for this hotel? OTA connections stay set up in Channex.')) return;
+        await api('DELETE', `/hotels/${hid}/channels/channex`);
+        toast('Disconnected from Channex.');
+        loadChannels();
+      })
+    : null;
+
+  return h('section', { class: 'card' }, head, steps, kv, ...problems, stuck, mappingBox, recent,
+    h('p', { class: 'muted small' }, `Channex property ${cx.propertyId} on ${cx.server}. Not sent to Channex (no such field there): days-before-arrival rules and extra adult/child prices; we still apply them on your own website.`),
+    disconnect ? h('div', { class: 'toolbar-actions' }, disconnect) : null);
+}
+
+async function openChannexMapping(cx, box) {
+  const hid = state.hotel.id;
+  box.replaceChildren(h('p', { class: 'muted small' }, 'Loading Channex rooms and rates...'));
+  const catalog = await api('GET', `/hotels/${hid}/channels/channex/catalog`);
+  const opt = (items, selected) => [h('option', { value: '' }, 'Not linked'),
+    ...items.map((i) => h('option', { value: i.id, selected: i.id === selected ? true : undefined }, i.title))];
+  const form = h('form', { class: 'stack-sm', novalidate: true });
+  for (const rt of cx.mapping) {
+    const roomSel = h('select', { name: `room:${rt.roomTypeId}`, 'aria-label': `Channex room type for ${rt.name}` }, ...opt(catalog.roomTypes, rt.channexRoomTypeId));
+    const planRows = rt.ratePlans.map((p) => {
+      const sel = h('select', { name: `rate:${p.id}`, 'aria-label': `Channex rate plan for ${p.name}` });
+      const fill = () => {
+        const roomId = roomSel.value;
+        const current = sel.value || p.channexRatePlanId;
+        sel.replaceChildren(...opt(catalog.ratePlans.filter((r) => !roomId || !r.roomTypeId || r.roomTypeId === roomId), current));
+        sel.disabled = !roomId;
+      };
+      fill();
+      roomSel.addEventListener('change', fill);
+      return h('label', { class: 'cx-map-row sub' }, h('span', {}, p.name, p.rateMode === 'DERIVED' ? h('span', { class: 'muted small' }, ' (derived, final price sent)') : null), sel);
+    });
+    form.append(h('div', { class: 'cx-map' }, h('label', { class: 'cx-map-row' }, h('b', {}, rt.name), roomSel), ...planRows));
+  }
+  const err = h('p', { class: 'form-error', hidden: true });
+  form.append(err, h('div', { class: 'toolbar-actions' },
+    h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => box.replaceChildren() }, 'Close'),
+    h('button', { type: 'submit', class: 'btn btn-primary' }, 'Save mapping')));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const rooms = [];
+    const ratePlans = [];
+    for (const el of form.querySelectorAll('select')) {
+      const [kind, id] = el.name.split(':');
+      if (kind === 'room') rooms.push({ roomTypeId: id, channexRoomTypeId: el.value || null });
+      else ratePlans.push({ ratePlanId: id, channexRatePlanId: el.disabled ? null : el.value || null });
+    }
+    try {
+      const r = await api('PUT', `/hotels/${hid}/channels/channex/mapping`, { rooms, ratePlans });
+      toast(r.changed ? 'Mapping saved. Linked rooms and rates are being sent to Channex.' : 'No changes.');
+      loadChannels();
+    } catch (e2) {
+      if (e2.status !== 401) showErr(err, explain(e2));
+    }
+  });
+  box.replaceChildren(h('h3', {}, 'Link to Channex'), form);
 }
 
 function cmConnectForm(connected) {

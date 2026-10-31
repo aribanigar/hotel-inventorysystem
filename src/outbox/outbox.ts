@@ -11,12 +11,14 @@
  * events with retries (see worker.ts).
  */
 import type { PoolClient } from 'pg';
+import { markChannexDirty } from '../channels/channex/ari.js';
 
 export type OutboxEvent = 'ARI_CHANGED' | 'RESERVATION_CREATED' | 'SUPPLIER_BOOK' | 'QLO_ARI_PUSH';
 
 /**
  * Fans out one outbox row per active subscription of the hotel that wants this event.
- * ARI changes also queue a push to the hotel's channel-manager account, if linked.
+ * ARI changes also queue a push to the hotel's channel-manager account, if linked,
+ * and mark the changed nights dirty for the hotel's Channex property, if connected.
  */
 export async function enqueueForSubscribers(
   client: PoolClient,
@@ -42,6 +44,8 @@ export async function enqueueForSubscribers(
       [hotelId, json],
     );
     n += cm.rowCount ?? 0;
+    const changes = Array.isArray(payload.changes) ? (payload.changes as Array<{ roomTypeId?: string | null; ratePlanId?: string | null; from: string; to: string }>) : [];
+    if ((await markChannexDirty(client, hotelId, changes)) > 0) n += 1;
   }
   return n;
 }

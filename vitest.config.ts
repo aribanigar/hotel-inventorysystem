@@ -18,6 +18,11 @@ export default defineConfig({
       HOLD_TTL_SECONDS: '600',
       LIVE_PING_RATE_LIMIT: '1000',
       LOGIN_RATE_LIMIT: '1000',
+      CHANNEX_BASE_URL: 'http://127.0.0.1:4197',
+      CHANNEX_API_KEY: 'test-channex-api-key',
+      CHANNEX_WEBHOOK_SECRET: 'test-channex-webhook-secret-0123',
+      CHANNEX_WEBHOOK_HMAC_SECRET: 'test-channex-hmac-secret',
+      CHANNEX_MIN_PUSH_INTERVAL_MS: '0',
     },
   },
 });
