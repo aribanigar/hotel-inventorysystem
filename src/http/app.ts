@@ -6,6 +6,7 @@ import { availabilityRouter } from './routes/availability.js';
 import { checkoutRouter } from './routes/checkout.js';
 import { extranetRouter } from './routes/extranet.js';
 import { hotelierRouter } from './routes/hotelier.js';
+import { qloCmApiRouter } from './routes/qloCmApi.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,8 @@ export function createApp() {
   // Routes that need the RAW body (signature checks) are mounted BEFORE express.json.
   app.use('/api/v1/webhooks', webhooksRouter);
   app.use('/api/v1/payments', paymentsRouter);
+  // QloApps-Channel-Manager-compatible PMS API (reads its own raw JSON body).
+  app.use('/api/cm_api', qloCmApiRouter);
 
   app.use(express.json({ limit: '100kb' }));
   app.use('/api/v1/checkout', checkoutRouter);

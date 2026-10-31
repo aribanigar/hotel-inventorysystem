@@ -142,7 +142,9 @@ legend { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 
 .badge { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
 .user-name { font-size: 13px; }
 .banner { margin: 12px 16px 0; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--low-bg); color: var(--ink); font-size: 14px; }
-.tabs { display: flex; gap: 4px; padding: 12px 16px 0; }
+.tabs { display: flex; gap: 4px; padding: 12px 16px 0; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { flex: 0 0 auto; }
 .tab {
   border: 0; background: transparent; padding: 10px 14px; font-weight: 600; color: var(--muted);
   border-bottom: 2px solid transparent; cursor: pointer;
@@ -150,7 +152,7 @@ legend { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--primary); }
 .panel { padding: 12px 16px 96px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
-.toolbar #new-booking-btn, .toolbar #new-booking-btn-2 { margin-left: auto; }
+.toolbar-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 .seg { display: inline-flex; gap: 6px; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; margin-bottom: 10px; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
@@ -270,6 +272,60 @@ dialog.sheet form { display: grid; gap: 14px; padding: 18px; overflow-y: auto; m
 }
 .toast.error { background: var(--out); color: #fff; }
 
+
+/* ---------- Rate plan + restriction rows ---------- */
+.cal tr.plan th.room { padding-left: 22px; }
+.cal tr.plan th.room .rname { font-size: 13px; font-weight: 600; }
+.cal tr.plan th.room .rplan { font-size: 11px; }
+.cal tr.plan td { padding: 2px 4px; }
+.pcell {
+  width: 100%; min-width: 62px; min-height: 40px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--surface); cursor: pointer;
+  display: grid; align-content: center; justify-items: center; gap: 1px; padding: 4px 2px;
+  font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 700; color: var(--ink);
+}
+.pcell.derived { background: var(--surface-2); color: var(--ink-2); font-weight: 600; border-style: dashed; }
+.pcell.closed { background: repeating-linear-gradient(135deg, var(--closed-bg), var(--closed-bg) 6px, transparent 6px, transparent 12px); color: var(--muted); }
+.pcell.empty { color: var(--muted); font-weight: 400; }
+.pcell:hover { border-color: var(--primary); }
+.rtags { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; }
+.rtag { font-size: 9px; font-weight: 800; padding: 1px 4px; border-radius: 4px; background: var(--low-bg); color: var(--low); letter-spacing: 0.02em; }
+.rtag.cl { background: var(--out-bg); color: var(--out); }
+.auto { font-size: 10px; font-weight: 700; color: var(--primary); margin-left: 4px; }
+
+/* ---------- Generic cards (setup, channels) ---------- */
+.stack { display: grid; gap: 14px; }
+.stack-sm { display: grid; gap: 12px; }
+.card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: grid; gap: 12px; }
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.card-head h2 { font-size: 17px; }
+.card-head p { margin: 4px 0 0; font-size: 13px; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.kv div { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; }
+.kv b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+.kv span { font-size: 11px; color: var(--muted); }
+.plan-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.plan-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.plan-list .meta { font-size: 12px; color: var(--muted); }
+.codebox {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; word-break: break-all;
+  background: var(--surface-2); border: 1px dashed var(--primary); border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.ok { color: var(--free); font-weight: 700; }
+.bad { color: var(--out); font-weight: 700; }
+.small { font-size: 12px; }
+h3.section { margin: 4px 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.banner-danger { background: var(--out-bg); }
+dialog.sheet.wide { width: min(680px, 100vw); }
+
+/* Scope picker in the update dialog */
+.scope { display: grid; gap: 8px; max-height: 200px; overflow-y: auto; padding: 2px; }
+.scope .rt { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; display: grid; gap: 6px; }
+.scope .rt > label.check { font-weight: 700; }
+.scope .plans { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-left: 28px; }
+.scope .plans label.check { font-size: 13px; }
+
 /* ---------- Phone ---------- */
 @media (max-width: 640px) {
   .user-name, .topbar .brand-mark, #source-badge { display: none; }
@@ -277,6 +333,7 @@ dialog.sheet form { display: grid; gap: 14px; padding: 18px; overflow-y: auto; m
   .topbar-left { flex: 1; }
   #hotel-select { max-width: none; width: 100%; }
   .tabs { padding: 8px 12px 0; }
+  .tab { padding: 10px 10px; }
   .panel { padding: 10px 12px 96px; }
   .banner { margin: 10px 12px 0; }
   .cal th.room { min-width: 98px; max-width: 108px; padding: 8px; }
@@ -288,6 +345,7 @@ dialog.sheet form { display: grid; gap: 14px; padding: 18px; overflow-y: auto; m
   .row.three label:last-child { grid-column: span 2; }
   dialog.sheet { margin: auto 0 0; width: 100vw; max-width: 100vw; border-radius: var(--radius) var(--radius) 0 0; }
   .stats { grid-template-columns: repeat(2, 1fr); }
+  .toolbar-actions { margin-left: 0; }
   .toolbar #new-booking-btn, .toolbar #new-booking-btn-2 {
     position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 6; box-shadow: var(--shadow); min-height: 48px;
   }

@@ -43,10 +43,13 @@
     </header>
 
     <div id="managed-banner" class="banner" hidden></div>
+    <div id="alert-banner" class="banner banner-danger" hidden></div>
 
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="calendar" aria-selected="true">Calendar</button>
       <button class="tab" role="tab" data-tab="bookings" aria-selected="false">Bookings</button>
+      <button class="tab" role="tab" data-tab="setup" aria-selected="false">Setup</button>
+      <button class="tab" role="tab" data-tab="channels" aria-selected="false">Channels</button>
       <button class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
     </nav>
 
@@ -59,16 +62,26 @@
           <button id="cal-next" class="btn btn-ghost" type="button" aria-label="Next two weeks">&rarr;</button>
         </div>
         <span id="cal-range" class="muted"></span>
-        <button id="new-booking-btn" class="btn btn-accent" type="button">+ Offline booking</button>
+        <div class="toolbar-actions">
+          <button id="bulk-btn" class="btn btn-ghost" type="button">Bulk update</button>
+          <button id="new-booking-btn" class="btn btn-accent" type="button">+ Offline booking</button>
+        </div>
       </div>
-      <div class="legend muted">
-        <span><i class="dot dot-free"></i>Rooms left to sell</span>
-        <span><i class="dot dot-low"></i>Last room</span>
-        <span><i class="dot dot-out"></i>Sold out</span>
-        <span><i class="dot dot-closed"></i>Closed</span>
+      <div class="toolbar">
+        <div class="chips" role="group" aria-label="Show rows">
+          <button class="chip" type="button" data-view="rooms" aria-pressed="true">Rooms</button>
+          <button class="chip" type="button" data-view="rates" aria-pressed="true">Rate plans</button>
+          <button class="chip" type="button" data-view="restrictions" aria-pressed="false">Restrictions</button>
+        </div>
+        <div class="legend muted">
+          <span><i class="dot dot-free"></i>Rooms left</span>
+          <span><i class="dot dot-low"></i>Last room</span>
+          <span><i class="dot dot-out"></i>Sold out</span>
+          <span><i class="dot dot-closed"></i>Closed</span>
+        </div>
       </div>
       <div class="grid-wrap" id="cal-grid" aria-live="polite"></div>
-      <p class="hint muted">Tap a day to change rooms, price or restrictions. Select a range in the editor to update many days at once.</p>
+      <p class="hint muted">Tap any day to change it. Use Bulk update for many rooms, plans, dates or only certain weekdays.</p>
     </section>
 
     <!-- Bookings -->
@@ -77,9 +90,22 @@
         <label class="inline">From <input id="bk-from" type="date"></label>
         <label class="inline">To <input id="bk-to" type="date"></label>
         <button id="bk-refresh" class="btn btn-ghost" type="button">Show</button>
-        <button id="new-booking-btn-2" class="btn btn-accent" type="button">+ Offline booking</button>
+        <a id="bk-export" class="btn btn-ghost" href="#" download>Export CSV</a>
+        <div class="toolbar-actions">
+          <button id="new-booking-btn-2" class="btn btn-accent" type="button">+ Offline booking</button>
+        </div>
       </div>
       <div id="bk-list" class="cards"></div>
+    </section>
+
+    <!-- Setup -->
+    <section id="tab-setup" class="panel" hidden>
+      <div id="setup-body" class="stack"></div>
+    </section>
+
+    <!-- Channels -->
+    <section id="tab-channels" class="panel" hidden>
+      <div id="channels-body" class="stack"></div>
     </section>
 
     <!-- Activity -->
@@ -88,39 +114,71 @@
     </section>
   </div>
 
-  <!-- Day / range editor -->
-  <dialog id="edit-dialog" class="sheet">
-    <form id="edit-form" method="dialog" novalidate>
+  <!-- Update (single day or bulk) -->
+  <dialog id="update-dialog" class="sheet wide">
+    <form id="update-form" method="dialog" novalidate>
       <header class="sheet-head">
         <div>
-          <h2 id="edit-title">Edit</h2>
-          <p id="edit-sub" class="muted"></p>
+          <h2 id="update-title">Update</h2>
+          <p id="update-sub" class="muted">Leave a field empty to keep it as it is.</p>
         </div>
         <button class="btn btn-ghost" value="cancel" type="submit" aria-label="Close">&times;</button>
       </header>
-      <div class="stats" id="edit-stats"></div>
+      <div class="stats" id="update-stats" hidden></div>
+      <fieldset>
+        <legend>Apply to</legend>
+        <div id="update-scope" class="scope"></div>
+      </fieldset>
       <div class="row">
         <label>From <input name="startDate" type="date" required></label>
         <label>To <input name="endDate" type="date" required></label>
       </div>
+      <fieldset>
+        <legend>Days of the week</legend>
+        <div class="chips" id="weekday-chips"></div>
+      </fieldset>
+      <h3 class="section">Rooms</h3>
       <div class="row">
         <label>Rooms left to sell <input name="availability" type="number" min="0" max="1000" inputmode="numeric"></label>
-        <label>Price per night (INR) <input name="price" type="text" inputmode="decimal" placeholder="e.g. 8500"></label>
+        <label>Close for sale
+          <select name="stopSell"><option value="">No change</option><option value="true">Closed</option><option value="false">Open</option></select>
+        </label>
+      </div>
+      <h3 class="section">Price (per night)</h3>
+      <div class="row three">
+        <label>Price (INR) <input name="price" type="text" inputmode="decimal"></label>
+        <label>Extra adult <input name="extraAdult" type="text" inputmode="decimal"></label>
+        <label>Each child <input name="extraChild" type="text" inputmode="decimal"></label>
+      </div>
+      <h3 class="section">Restrictions</h3>
+      <div class="row">
+        <label>Min stay, counted on arrival <input name="minLos" type="number" min="1" max="365" inputmode="numeric"></label>
+        <label>Max stay, counted on arrival <input name="maxLos" type="number" min="0" max="365" inputmode="numeric" placeholder="0 = none"></label>
       </div>
       <div class="row">
-        <label>Minimum stay (nights) <input name="minLos" type="number" min="1" max="365" inputmode="numeric"></label>
-        <span></span>
+        <label>Min stay through these dates <input name="minStayThrough" type="number" min="1" max="365" inputmode="numeric"></label>
+        <label>Max stay through these dates <input name="maxStayThrough" type="number" min="0" max="365" inputmode="numeric" placeholder="0 = none"></label>
       </div>
-      <fieldset class="toggles">
-        <label class="check"><input name="stopSell" type="checkbox"> Close these dates for online sale</label>
-        <label class="check"><input name="closedToArrival" type="checkbox"> No check-ins on these dates</label>
-        <label class="check"><input name="closedToDeparture" type="checkbox"> No check-outs on these dates</label>
-      </fieldset>
-      <p id="edit-error" class="form-error" role="alert" hidden></p>
-      <p id="edit-readonly" class="muted" hidden>Your role can view this but not change it.</p>
+      <div class="row">
+        <label>Book at least (days ahead) <input name="minAdvanceDays" type="number" min="0" max="730" inputmode="numeric"></label>
+        <label>Book at most (days ahead) <input name="maxAdvanceDays" type="number" min="0" max="730" inputmode="numeric" placeholder="0 = none"></label>
+      </div>
+      <div class="row three">
+        <label>Check-ins
+          <select name="closedToArrival"><option value="">No change</option><option value="true">Not allowed</option><option value="false">Allowed</option></select>
+        </label>
+        <label>Check-outs
+          <select name="closedToDeparture"><option value="">No change</option><option value="true">Not allowed</option><option value="false">Allowed</option></select>
+        </label>
+        <label>Rate plan
+          <select name="planStopSell"><option value="">No change</option><option value="true">Closed</option><option value="false">Open</option></select>
+        </label>
+      </div>
+      <p id="update-note" class="muted small" hidden></p>
+      <p id="update-error" class="form-error" role="alert" hidden></p>
       <footer class="sheet-foot">
-        <button id="edit-sell" class="btn btn-accent" type="button">Record a sale for this day</button>
-        <button id="edit-save" class="btn btn-primary" type="button">Save changes</button>
+        <button id="update-sell" class="btn btn-accent" type="button" hidden>Record a sale</button>
+        <button id="update-save" class="btn btn-primary" type="button">Save changes</button>
       </footer>
     </form>
   </dialog>
@@ -164,6 +222,87 @@
       <footer class="sheet-foot">
         <button class="btn btn-ghost" value="cancel" type="submit">Cancel</button>
         <button id="booking-save" class="btn btn-accent" type="button">Confirm booking</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Room type -->
+  <dialog id="room-dialog" class="sheet">
+    <form id="room-form" method="dialog" novalidate>
+      <header class="sheet-head">
+        <div>
+          <h2 id="room-title">Room type</h2>
+          <p class="muted">Total rooms is how many of this room you physically have.</p>
+        </div>
+        <button class="btn btn-ghost" value="cancel" type="submit" aria-label="Close">&times;</button>
+      </header>
+      <label>Name <input name="name" type="text" maxlength="80" required placeholder="e.g. Deluxe Lake View"></label>
+      <div class="row">
+        <label>Total rooms <input name="totalRooms" type="number" min="0" max="1000" inputmode="numeric" required></label>
+        <label>Price includes guests <input name="baseOccupancy" type="number" min="1" max="20" inputmode="numeric" required></label>
+      </div>
+      <div class="row three">
+        <label>Max adults <input name="maxAdults" type="number" min="1" max="20" inputmode="numeric" required></label>
+        <label>Max children <input name="maxChildren" type="number" min="0" max="20" inputmode="numeric" required></label>
+        <label>Max infants <input name="maxInfants" type="number" min="0" max="20" inputmode="numeric" required></label>
+      </div>
+      <div id="room-create-only" class="stack-sm">
+        <div class="row">
+          <label>First rate plan <input name="ratePlanName" type="text" maxlength="80" value="Room only"></label>
+          <label>Meals
+            <select name="mealPlan"><option value="EP">Room only (EP)</option><option value="CP">Breakfast (CP)</option><option value="MAP">Breakfast + dinner (MAP)</option><option value="AP">All meals (AP)</option></select>
+          </label>
+        </div>
+        <label>Starting price per night (INR) <input name="price" type="text" inputmode="decimal" placeholder="e.g. 6500"></label>
+      </div>
+      <label id="room-active-wrap" class="check" hidden><input name="isActive" type="checkbox"> Active (shown and sold)</label>
+      <p id="room-note" class="muted small" hidden></p>
+      <p id="room-error" class="form-error" role="alert" hidden></p>
+      <footer class="sheet-foot">
+        <button class="btn btn-ghost" value="cancel" type="submit">Cancel</button>
+        <button id="room-save" class="btn btn-primary" type="button">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Rate plan -->
+  <dialog id="plan-dialog" class="sheet">
+    <form id="plan-form" method="dialog" novalidate>
+      <header class="sheet-head">
+        <div>
+          <h2 id="plan-title">Rate plan</h2>
+          <p id="plan-sub" class="muted"></p>
+        </div>
+        <button class="btn btn-ghost" value="cancel" type="submit" aria-label="Close">&times;</button>
+      </header>
+      <div class="row">
+        <label>Name <input name="name" type="text" maxlength="80" required placeholder="e.g. With breakfast"></label>
+        <label>Meals
+          <select name="mealPlan"><option value="EP">Room only (EP)</option><option value="CP">Breakfast (CP)</option><option value="MAP">Breakfast + dinner (MAP)</option><option value="AP">All meals (AP)</option></select>
+        </label>
+      </div>
+      <fieldset>
+        <legend>Pricing</legend>
+        <div class="chips">
+          <button type="button" class="chip" data-mode="MANUAL" aria-pressed="true">Set its own prices</button>
+          <button type="button" class="chip" data-mode="DERIVED" aria-pressed="false">Follow another plan</button>
+        </div>
+      </fieldset>
+      <div id="plan-derived" class="stack-sm" hidden>
+        <label>Follow <select name="parentRatePlanId"></select></label>
+        <div class="row">
+          <label>Adjust by
+            <select name="deriveType"><option value="PERCENT">Percent (%)</option><option value="AMOUNT">Amount (INR)</option></select>
+          </label>
+          <label>Value (use minus for a discount) <input name="deriveValue" type="text" inputmode="decimal" placeholder="e.g. 15 or -500"></label>
+        </div>
+        <label class="check"><input name="followParentRestrictions" type="checkbox" checked> Also follow its restrictions (min stay, closed dates)</label>
+      </div>
+      <label class="check"><input name="isDefault" type="checkbox"> Default plan (shown first, sent to channels as the main rate)</label>
+      <p id="plan-error" class="form-error" role="alert" hidden></p>
+      <footer class="sheet-foot">
+        <button class="btn btn-ghost" value="cancel" type="submit">Cancel</button>
+        <button id="plan-save" class="btn btn-primary" type="button">Save</button>
       </footer>
     </form>
   </dialog>

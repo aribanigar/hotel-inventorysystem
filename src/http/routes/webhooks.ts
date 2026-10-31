@@ -49,6 +49,8 @@ const UpdateSchema = z
     ratePlanCode: z.string().min(1).max(64).optional(),
     startDate: IsoDate,
     endDate: IsoDate,
+    /** Optional weekday filter, 0 = Sunday ... 6 = Saturday. */
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
     availability: z.number().int().min(0).max(10_000).optional(),
     rate: z.object({ amount: z.union([z.string().max(32), z.number()]), currency: z.string().length(3) }).optional(),
     stopSell: z.boolean().optional(),
@@ -56,6 +58,12 @@ const UpdateSchema = z
     maxLos: z.number().int().min(1).max(365).nullable().optional(),
     closedToArrival: z.boolean().optional(),
     closedToDeparture: z.boolean().optional(),
+    minStayThrough: z.number().int().min(1).max(365).optional(),
+    maxStayThrough: z.number().int().min(1).max(365).nullable().optional(),
+    minAdvanceDays: z.number().int().min(0).max(730).optional(),
+    maxAdvanceDays: z.number().int().min(0).max(730).nullable().optional(),
+    extraAdult: z.union([z.string().max(32), z.number()]).optional(),
+    extraChild: z.union([z.string().max(32), z.number()]).optional(),
   })
   .strict()
   .superRefine((u, ctx) => {
@@ -63,7 +71,10 @@ const UpdateSchema = z
     else if (daysBetween(u.startDate, u.endDate) + 1 > MAX_RANGE_DAYS) {
       ctx.addIssue({ code: 'custom', path: ['endDate'], message: `range longer than ${MAX_RANGE_DAYS} days` });
     }
-    const rateFields = u.rate || u.minLos !== undefined || u.maxLos !== undefined || u.closedToArrival !== undefined || u.closedToDeparture !== undefined;
+    const rateFields =
+      u.rate || u.minLos !== undefined || u.maxLos !== undefined || u.closedToArrival !== undefined || u.closedToDeparture !== undefined ||
+      u.minStayThrough !== undefined || u.maxStayThrough !== undefined || u.minAdvanceDays !== undefined || u.maxAdvanceDays !== undefined ||
+      u.extraAdult !== undefined || u.extraChild !== undefined;
     if (rateFields && !u.ratePlanCode) ctx.addIssue({ code: 'custom', path: ['ratePlanCode'], message: 'required for rate or restriction updates' });
     if (!rateFields && u.availability === undefined && u.stopSell === undefined) {
       ctx.addIssue({ code: 'custom', message: 'update carries no changes' });
@@ -121,6 +132,15 @@ webhooksRouter.post(
 
     // Convert prices up front so a bad amount rejects the whole batch before any write.
     const priceErrors: string[] = [];
+    // Extra-guest amounts may be 0 (decimalToMinor rejects 0), so parse them separately.
+    const extra = (v: string | number | undefined, field: string) => {
+      if (v === undefined) return undefined;
+      if (v === 0 || v === '0' || v === '0.00') return 0;
+      const m = decimalToMinor(v);
+      if (m === null) priceErrors.push(field);
+      return m ?? undefined;
+    };
+    const extras = push.updates.map((u, i) => ({ adult: extra(u.extraAdult, `updates[${i}].extraAdult`), child: extra(u.extraChild, `updates[${i}].extraChild`) }));
     const prices = push.updates.map((u, i) => {
       if (!u.rate) return undefined;
       const minor = decimalToMinor(u.rate.amount);
@@ -191,6 +211,13 @@ webhooksRouter.post(
             ...(u.maxLos !== undefined ? { maxLos: u.maxLos } : {}),
             ...(u.closedToArrival !== undefined ? { closedToArrival: u.closedToArrival } : {}),
             ...(u.closedToDeparture !== undefined ? { closedToDeparture: u.closedToDeparture } : {}),
+            ...(u.weekdays ? { weekdays: u.weekdays } : {}),
+            ...(u.minStayThrough !== undefined ? { minStayThrough: u.minStayThrough } : {}),
+            ...(u.maxStayThrough !== undefined ? { maxStayThrough: u.maxStayThrough } : {}),
+            ...(u.minAdvanceDays !== undefined ? { minAdvanceDays: u.minAdvanceDays } : {}),
+            ...(u.maxAdvanceDays !== undefined ? { maxAdvanceDays: u.maxAdvanceDays } : {}),
+            ...(extras[i]!.adult !== undefined ? { extraAdultMinor: extras[i]!.adult } : {}),
+            ...(extras[i]!.child !== undefined ? { extraChildMinor: extras[i]!.child } : {}),
           };
         });
         if (unknown.length) {

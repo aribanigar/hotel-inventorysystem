@@ -9,7 +9,7 @@
  * those rows until our transaction commits or rolls back.
  */
 import { pool, type Db } from '../db/pool.js';
-import { addDays, assertValidStay } from '../lib/dates.js';
+import { addDays, assertValidStay, daysBetween, todayIn } from '../lib/dates.js';
 import { AppError } from '../lib/errors.js';
 import { loadSellableProduct } from './catalog.js';
 import type { LiveInventory, NightQuote, UnavailableReason } from './types.js';
@@ -17,6 +17,9 @@ import type { LiveInventory, NightQuote, UnavailableReason } from './types.js';
 export interface InternalFetchOptions {
   ratePlanId?: string | null;
   rooms?: number;
+  /** Guests across all rooms. Used for extra-adult / child pricing. */
+  adults?: number;
+  children?: number;
   /**
    * 'none'   : plain read (search results, availability API).
    * 'update' : FOR UPDATE on inventory rows + FOR SHARE on rate rows. MUST be used with
@@ -43,6 +46,12 @@ interface RateRow {
   closed_to_arrival: boolean;
   closed_to_departure: boolean;
   stop_sell: boolean;
+  min_stay_through: number;
+  max_stay_through: number | null;
+  min_advance_days: number;
+  max_advance_days: number | null;
+  extra_adult_minor: number;
+  extra_child_minor: number;
 }
 
 export async function fetchInternalLiveInventory(
@@ -53,6 +62,8 @@ export async function fetchInternalLiveInventory(
   opts: InternalFetchOptions = {},
 ): Promise<LiveInventory & { ratePlanId: string }> {
   const { rooms = 1, lock = 'none', db = pool } = opts;
+  const adults = opts.adults ?? 0;
+  const children = opts.children ?? 0;
   if (lock === 'update' && db === pool) {
     // Locks taken on a pooled autocommit query are released immediately: a silent bug.
     throw new Error('fetchInternalLiveInventory: lock=update requires a transaction client');
@@ -82,7 +93,8 @@ export async function fetchInternalLiveInventory(
   // departure" is a property of the departure day's row. FOR SHARE blocks a concurrent
   // price push from changing the rate mid-checkout but lets other readers through.
   const rateSql = `
-    SELECT stay_date, price_minor, currency, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell
+    SELECT stay_date, price_minor, currency, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell,
+           min_stay_through, max_stay_through, min_advance_days, max_advance_days, extra_adult_minor, extra_child_minor
       FROM daily_rates
      WHERE rate_plan_id = $1 AND stay_date BETWEEN $2 AND $3
      ORDER BY stay_date
@@ -106,6 +118,9 @@ export async function fetchInternalLiveInventory(
   let total = 0;
   let currency = product.currency;
   let minRooms = Number.POSITIVE_INFINITY;
+  // Guests above the room's base occupancy pay the extra-adult price; every child pays
+  // the child price (both per night, set per rate plan per date). Spread across rooms.
+  const extraAdults = Math.max(0, adults - product.baseOccupancy * rooms);
 
   for (const date of nights) {
     const i = invByDate.get(date);
@@ -120,6 +135,12 @@ export async function fetchInternalLiveInventory(
     if (!r || r.price_minor === null) fail('NO_RATE', `no rate for ${date}`);
     else if (r.stop_sell) fail('STOP_SELL', `rate closed on ${date}`);
 
+    // Stay-through rules apply on EVERY night, not just arrival (OTA "LOS stay").
+    if (r && nights.length < r.min_stay_through) fail('MIN_LOS', `stays covering ${date} need at least ${r.min_stay_through} nights`);
+    if (r && r.max_stay_through !== null && nights.length > r.max_stay_through) {
+      fail('MAX_LOS', `stays covering ${date} can be at most ${r.max_stay_through} nights`);
+    }
+
     if (r && r.currency.trim() !== currency) {
       // Mixed currencies inside one stay is a data error; refuse rather than mis-sum.
       fail('NO_RATE', `currency mismatch on ${date}`);
@@ -128,7 +149,7 @@ export async function fetchInternalLiveInventory(
     const avail = i?.available ?? 0;
     minRooms = Math.min(minRooms, avail);
     quotes.push({ date, availableRooms: avail, priceMinor: r?.price_minor ?? null });
-    if (r?.price_minor) total += r.price_minor * rooms;
+    if (r?.price_minor) total += r.price_minor * rooms + extraAdults * r.extra_adult_minor + children * r.extra_child_minor;
   }
 
   // Step 5: stay-level restrictions (the OTA standard: min/max stay apply on arrival day).
@@ -137,6 +158,12 @@ export async function fetchInternalLiveInventory(
     if (arrival.closed_to_arrival) fail('CLOSED_TO_ARRIVAL', `no arrivals on ${checkIn}`);
     if (nights.length < arrival.min_los) fail('MIN_LOS', `minimum stay is ${arrival.min_los} nights`);
     if (arrival.max_los !== null && nights.length > arrival.max_los) fail('MAX_LOS', `maximum stay is ${arrival.max_los} nights`);
+    // Booking window ("min/max booking offset"): days from today to arrival.
+    const lead = daysBetween(todayIn(product.timezone), checkIn);
+    if (lead < arrival.min_advance_days) fail('ADVANCE_PURCHASE', `book at least ${arrival.min_advance_days} day(s) before arrival`);
+    if (arrival.max_advance_days !== null && lead > arrival.max_advance_days) {
+      fail('ADVANCE_PURCHASE', `bookable at most ${arrival.max_advance_days} day(s) before arrival`);
+    }
   }
   const departure = rateByDate.get(checkOut);
   if (departure?.closed_to_departure) fail('CLOSED_TO_DEPARTURE', `no departures on ${checkOut}`);

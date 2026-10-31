@@ -19,6 +19,10 @@ import { listAudit } from '../../extranet/audit.js';
 import { clearSessionCookie, login, logout, readCookie, requireHotelRole, requireSession, SESSION_COOKIE, setSessionCookie } from '../../extranet/auth.js';
 import { getCalendar } from '../../extranet/calendar.js';
 import { changeReservationStatus, createOfflineReservation, listReservations } from '../../extranet/reservations.js';
+import {
+  channelHealth, connectQloCm, createRoomType, disconnectQloCm, fullSync, getSetup, resetAvailability, retryFailed, saveRatePlan,
+  toCsv, updateRoomType, updateSettings,
+} from '../../extranet/setup.js';
 import { isUuid } from '../../inventory/catalog.js';
 import { addDays, isIsoDate, todayIn } from '../../lib/dates.js';
 import { AppError } from '../../lib/errors.js';
@@ -100,6 +104,58 @@ hotelierRouter.post('/hotels/:hotelId/reservations/:reservationId/status', requi
   const body = StatusBody.safeParse(req.body);
   if (!body.success) throw new AppError('VALIDATION_ERROR', 'Invalid status');
   res.json(await changeReservationStatus(req.params.hotelId as string, req.hotelUser!.id, id, body.data.status, body.data.remark));
+});
+
+// ---- Setup: room types, rate plans, settings ---------------------------------
+const H = (req: express.Request) => req.params.hotelId as string;
+const U = (req: express.Request) => req.hotelUser!.id;
+const id = (v: unknown) => {
+  if (!isUuid(v)) throw new AppError('NOT_FOUND', 'Not found');
+  return v;
+};
+
+hotelierRouter.get('/hotels/:hotelId/setup', requireHotelRole('frontdesk'), async (req, res) => res.json(await getSetup(H(req))));
+hotelierRouter.post('/hotels/:hotelId/room-types', requireHotelRole('manager'), async (req, res) => res.status(201).json(await createRoomType(H(req), U(req), req.body)));
+hotelierRouter.put('/hotels/:hotelId/room-types/:roomTypeId', requireHotelRole('manager'), async (req, res) =>
+  res.json(await updateRoomType(H(req), U(req), id(req.params.roomTypeId), req.body)),
+);
+hotelierRouter.post('/hotels/:hotelId/rate-plans', requireHotelRole('manager'), async (req, res) => res.status(201).json(await saveRatePlan(H(req), U(req), null, req.body)));
+hotelierRouter.put('/hotels/:hotelId/rate-plans/:ratePlanId', requireHotelRole('manager'), async (req, res) =>
+  res.json(await saveRatePlan(H(req), U(req), id(req.params.ratePlanId), req.body)),
+);
+hotelierRouter.put('/hotels/:hotelId/settings', requireHotelRole('owner'), async (req, res) => res.json(await updateSettings(H(req), U(req), req.body)));
+hotelierRouter.post('/hotels/:hotelId/reset-availability', requireHotelRole('manager'), async (req, res) =>
+  res.json(await resetAvailability(H(req), U(req), req.body?.roomTypeId ? id(req.body.roomTypeId) : undefined)),
+);
+
+// ---- Channels ------------------------------------------------------------------
+hotelierRouter.get('/hotels/:hotelId/channels', requireHotelRole('manager'), async (req, res) => res.json(await channelHealth(H(req))));
+hotelierRouter.post('/hotels/:hotelId/channels/sync', requireHotelRole('manager'), rateLimit({ windowMs: 60_000, max: 3 }), async (req, res) =>
+  res.json(await fullSync(H(req), U(req))),
+);
+hotelierRouter.post('/hotels/:hotelId/channels/retry', requireHotelRole('manager'), async (req, res) => res.json(await retryFailed(H(req), U(req))));
+hotelierRouter.post('/hotels/:hotelId/channels/qloapps', requireHotelRole('owner'), async (req, res) => {
+  const r = await connectQloCm(H(req), U(req), req.body);
+  // What the owner pastes into the CM (PMS > General Settings).
+  res.json({ ...r, webserviceUrl: `${req.protocol}://${req.get('host')}` });
+});
+hotelierRouter.delete('/hotels/:hotelId/channels/qloapps', requireHotelRole('owner'), async (req, res) => res.json(await disconnectQloCm(H(req), U(req))));
+
+// ---- Export --------------------------------------------------------------------
+hotelierRouter.get('/hotels/:hotelId/reservations.csv', requireHotelRole('frontdesk'), async (req, res) => {
+  const from = String(req.query.from ?? '');
+  const to = String(req.query.to ?? '');
+  if (!isIsoDate(from) || !isIsoDate(to) || to < from || to > addDays(from, 370)) throw new AppError('VALIDATION_ERROR', 'Invalid dates');
+  const rows = await listReservations(H(req), from, to);
+  const csv = toCsv(rows, [
+    ['reference', 'Reference'], ['channel', 'Channel'], ['source', 'Source'], ['source_detail', 'Source detail'], ['status', 'Status'],
+    ['guest_name', 'Guest'], ['guest_phone', 'Phone'], ['guest_email', 'Email'], ['room_name', 'Room type'], ['rooms', 'Rooms'],
+    ['check_in', 'Check-in'], ['check_out', 'Check-out'], ['adults', 'Adults'], ['children', 'Children'], ['amount_minor', 'Amount (paise)'],
+    ['currency', 'Currency'], ['overbooked', 'Overbooked'], ['created_at', 'Created'], ['notes', 'Notes'],
+  ]);
+  res.setHeader('content-type', 'text/csv; charset=utf-8');
+  res.setHeader('content-disposition', `attachment; filename="bookings-${from}-to-${to}.csv"`);
+  res.send('\ufeff' + csv); // BOM so Excel opens UTF-8 names correctly
 });
 
 hotelierRouter.get('/hotels/:hotelId/activity', requireHotelRole('manager'), async (req, res) => {

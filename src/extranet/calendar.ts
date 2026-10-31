@@ -36,7 +36,17 @@ export async function getCalendar(hotelId: string, from: string, days: number) {
     )
   ).rows;
   const roomIds = rooms.map((r) => r.id);
-  const rateIds = rooms.map((r) => r.rate_plan_id).filter(Boolean);
+  const plans = (
+    await pool.query(
+      `SELECT rp.id, rp.room_type_id, rp.name, rp.meal_plan, rp.is_default, rp.rate_mode, rp.derive_type, rp.derive_value,
+              rp.follow_parent_restrictions, p.name AS parent_name
+         FROM rate_plans rp LEFT JOIN rate_plans p ON p.id = rp.parent_rate_plan_id
+        WHERE rp.room_type_id = ANY($1::uuid[]) AND rp.is_active
+        ORDER BY rp.is_default DESC, rp.rate_mode, rp.name`,
+      [roomIds],
+    )
+  ).rows;
+  const rateIds = plans.map((p) => p.id);
 
   const [inv, rates, soldOffline, soldOnline] = await Promise.all([
     pool.query(
@@ -45,7 +55,8 @@ export async function getCalendar(hotelId: string, from: string, days: number) {
       [roomIds, from, to],
     ),
     pool.query(
-      `SELECT rate_plan_id, stay_date, price_minor, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell
+      `SELECT rate_plan_id, stay_date, price_minor, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell,
+              min_stay_through, max_stay_through, min_advance_days, max_advance_days, extra_adult_minor, extra_child_minor
          FROM daily_rates WHERE rate_plan_id = ANY($1::uuid[]) AND stay_date BETWEEN $2 AND $3`,
       [rateIds, from, to],
     ),
@@ -95,6 +106,38 @@ export async function getCalendar(hotelId: string, from: string, days: number) {
       code: rt.code,
       maxOccupancy: rt.max_occupancy,
       ratePlan: rt.rate_plan_id ? { id: rt.rate_plan_id, name: rt.rate_plan_name, mealPlan: rt.meal_plan } : null,
+      ratePlans: plans
+        .filter((p) => p.room_type_id === rt.id)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          mealPlan: p.meal_plan,
+          isDefault: p.is_default,
+          rateMode: p.rate_mode,
+          followParentRestrictions: p.follow_parent_restrictions,
+          rule:
+            p.rate_mode === 'DERIVED'
+              ? `${p.parent_name} ${Number(p.derive_value) >= 0 ? '+' : ''}${p.derive_type === 'PERCENT' ? `${Number(p.derive_value) / 100}%` : (Number(p.derive_value) / 100).toFixed(0)}`
+              : null,
+          days: dates.map((d) => {
+            const r = rateMap.get(key(p.id, d));
+            return {
+              date: d,
+              priceMinor: r?.price_minor ?? null,
+              stopSell: !!r?.stop_sell,
+              minLos: r?.min_los ?? 1,
+              maxLos: r?.max_los ?? null,
+              minStayThrough: r?.min_stay_through ?? 1,
+              maxStayThrough: r?.max_stay_through ?? null,
+              minAdvanceDays: r?.min_advance_days ?? 0,
+              maxAdvanceDays: r?.max_advance_days ?? null,
+              closedToArrival: !!r?.closed_to_arrival,
+              closedToDeparture: !!r?.closed_to_departure,
+              extraAdultMinor: r?.extra_adult_minor ?? 0,
+              extraChildMinor: r?.extra_child_minor ?? 0,
+            };
+          }),
+        })),
       days: dates.map((d) => {
         const i = invMap.get(key(rt.id, d));
         const r = rt.rate_plan_id ? rateMap.get(key(rt.rate_plan_id, d)) : undefined;

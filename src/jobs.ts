@@ -4,6 +4,7 @@
  */
 import { expireDueHolds } from './engine/holds.js';
 import { logger } from './lib/logger.js';
+import { rollHorizon } from './extranet/setup.js';
 import { processOutboxBatch } from './outbox/worker.js';
 
 type Stop = () => Promise<void>;
@@ -36,6 +37,8 @@ export function startJobs(): Stop {
     // Sweeper every 15 s: a hold lives at most ~15 s past its 10-minute expiry.
     loop('hold-sweeper', 15_000, () => expireDueHolds()),
     loop('outbox', 2_000, () => processOutboxBatch()),
+    // Keep extranet hotels open for sale N days ahead (inserts only missing nights).
+    loop('horizon-roll', 3_600_000, () => rollHorizon()),
   ];
   logger.info('background jobs started');
   return async () => {

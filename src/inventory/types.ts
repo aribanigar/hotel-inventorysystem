@@ -9,7 +9,8 @@ export type UnavailableReason =
   | 'MIN_LOS'
   | 'MAX_LOS'
   | 'CLOSED_TO_ARRIVAL'
-  | 'CLOSED_TO_DEPARTURE';
+  | 'CLOSED_TO_DEPARTURE'
+  | 'ADVANCE_PURCHASE'; //  booked too early or too late for this rate's booking window
 
 export interface NightQuote {
   date: string;

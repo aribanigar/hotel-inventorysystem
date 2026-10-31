@@ -46,7 +46,7 @@ export async function seed(opts: { days?: number; allotment?: number; nightlyMin
     ).rows[0].id;
     const chainRoom = (
       await c.query(
-        `INSERT INTO room_types (hotel_id, code, name, max_occupancy, supplier_room_code) VALUES ($1, 'DLX', 'Deluxe Lake View', 3, 'DLX-LV') RETURNING id`,
+        `INSERT INTO room_types (hotel_id, code, name, max_occupancy, max_adults, supplier_room_code) VALUES ($1, 'DLX', 'Deluxe Lake View', 3, 3, 'DLX-LV') RETURNING id`,
         [chain],
       )
     ).rows[0].id;
@@ -62,8 +62,8 @@ export async function seed(opts: { days?: number; allotment?: number; nightlyMin
     ).rows[0].id;
     const cmRoom = (
       await c.query(
-        `INSERT INTO room_types (hotel_id, code, name, max_occupancy, cm_room_code) VALUES ($1, 'SUP', 'Superior Room', 3, 'SUP') RETURNING id`,
-        [cm],
+        `INSERT INTO room_types (hotel_id, code, name, max_occupancy, max_adults, total_rooms, cm_room_code) VALUES ($1, 'SUP', 'Superior Room', 3, 3, $2, 'SUP') RETURNING id`,
+        [cm, allotment],
       )
     ).rows[0].id;
     const cmRate = (
@@ -81,7 +81,10 @@ export async function seed(opts: { days?: number; allotment?: number; nightlyMin
       )
     ).rows[0].id;
     const hbRoom = (
-      await c.query(`INSERT INTO room_types (hotel_id, code, name, max_occupancy) VALUES ($1, 'BED', 'Deluxe Bedroom', 3) RETURNING id`, [hb])
+      await c.query(
+        `INSERT INTO room_types (hotel_id, code, name, max_occupancy, max_adults, total_rooms) VALUES ($1, 'BED', 'Deluxe Bedroom', 3, 3, $2) RETURNING id`,
+        [hb, allotment],
+      )
     ).rows[0].id;
     const hbRate = (
       await c.query(

@@ -24,9 +24,14 @@ availabilityRouter.get('/:hotelId/availability', rateLimit({ windowMs: 60_000, m
   const checkIn = String(req.query.checkIn ?? '');
   const checkOut = String(req.query.checkOut ?? '');
   const rooms = Number(req.query.rooms ?? 1);
+  const adults = Number(req.query.adults ?? 2);
+  const children = Number(req.query.children ?? 0);
   const onlyRoom = req.query.roomTypeId ? String(req.query.roomTypeId) : undefined;
   if (!isUuid(hotelId) || (onlyRoom && !isUuid(onlyRoom))) throw new AppError('VALIDATION_ERROR', 'Invalid id');
   if (!Number.isInteger(rooms) || rooms < 1 || rooms > 9) throw new AppError('VALIDATION_ERROR', 'rooms must be 1-9');
+  if (!Number.isInteger(adults) || adults < 1 || adults > 40 || !Number.isInteger(children) || children < 0 || children > 20) {
+    throw new AppError('VALIDATION_ERROR', 'adults must be 1-40 and children 0-20');
+  }
 
   const { rows: hotelRows } = await pool.query('SELECT id, name, inventory_source, timezone FROM hotels WHERE id = $1 AND is_active', [hotelId]);
   const hotel = hotelRows[0];
@@ -47,7 +52,7 @@ availabilityRouter.get('/:hotelId/availability', rateLimit({ windowMs: 60_000, m
         const live =
           hotel.inventory_source === 'EXTERNAL_B2B'
             ? await fetchExternalLiveInventory(hotelId, room.id, checkIn, checkOut, { rooms })
-            : await fetchInternalLiveInventory(hotelId, room.id, checkIn, checkOut, { rooms });
+            : await fetchInternalLiveInventory(hotelId, room.id, checkIn, checkOut, { rooms, adults, children });
         const { supplierBookingKey: _k, supplierExpiresAt: _e, ...publicView } = live;
         return { roomTypeId: room.id, name: room.name, maxOccupancy: room.max_occupancy, ...publicView };
       } catch (err) {

@@ -47,7 +47,7 @@ them at a throwaway database):
 TEST_DATABASE_URL=postgres://postgres@localhost:5432/hotel_inventory_test npm test
 ```
 
-The 39 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
+The 55 tests cover, for checkout and channels: webhook auth (key + HMAC), upsert insert/update, stale and duplicate
 pushes, atomic rejection of unmapped codes, holds and decrements, price changes,
 restrictions, **10 buyers racing for the last room (exactly one wins)**, double-click
 idempotency, expiry, customer release, payment confirmation and CM notification, wrong
@@ -57,6 +57,41 @@ per-hotel access, role limits, offline sales and their outbox events, sold-out r
 cancel, no-show and early check-out giving nights back exactly once, channel-manager
 hotels redirected to their CM, and **a walk-in racing 5 online buyers for the last room
 (exactly one wins)**.
+
+## Channel-manager feature set (what the QloApps Channel Manager screens do, and more)
+
+| Feature | Where |
+|---|---|
+| Room types with total rooms, base occupancy, max adults / children / infants. Changing total rooms shifts every future night by the difference (sold stays sold) | Setup tab |
+| Rate plans: manual, or **derived** from another plan by +/- % or +/- INR, optionally following its restrictions. Derived prices are stored and recalculated in the same transaction as every parent change | Setup tab |
+| Full restriction set per rate plan per night: stop-sell, CTA, CTD, min/max stay on arrival, min/max stay through, min/max days before arrival, extra adult and child prices | Calendar > tap a day, or Bulk update |
+| **Bulk update** across room types x rate plans x date range x **weekdays** | Calendar > Bulk update |
+| **Rolling selling window** (0-730 days): new nights open automatically with total rooms and the latest prices | Setup > Selling window |
+| **Reset availability**: recompute rooms left = total rooms minus every booking | Setup |
+| **Full sync** to every channel, **retry failed**, live sync health per channel | Channels tab |
+| Bookings with channel name, overbooked flag and **CSV export** | Bookings tab |
+
+### Connect to Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda, Airbnb... via the QloApps Channel Manager
+
+This server speaks the same PMS API the hosted QloApps Channel Manager uses to talk to
+QloApps (`/api/cm_api/...`, details in [docs/QLOAPPS_CHANNEL_MANAGER.md](docs/QLOAPPS_CHANNEL_MANAGER.md)):
+
+1. In the Channel Manager: *Account settings* > generate API **Client ID + Secret**.
+2. In our extranet (owner): *Channels* > *QloApps Channel Manager* > paste them > **Connect**.
+   You get a **Webservice URL** and a **Webservice key** (shown once).
+3. In the Channel Manager: *PMS* > *General Settings* > paste URL + key, timezone
+   Asia/Kolkata > **Test Connection** > Submit. It imports the hotels and room types.
+4. Map properties/rooms, add channels (Booking.com property id etc.), then **Sync all channels**.
+
+From then on every change here (prices, closures, walk-ins, website bookings) is pushed
+within seconds, and every OTA booking arrives through `booking_notification` and takes
+the rooms under the same row locks as everything else. An OTA booking for a night that is
+already gone is still recorded (it can't be refused), flagged **Overbooked** in the
+Bookings tab and logged as an `ALERT`.
+
+Not verified against Webkul's live service yet: the contract is read from their connector
+code, and a trial plan can't sync inventory. Confirm with Webkul that a non-QloApps PMS
+may connect before relying on it.
 
 ## Hotelier extranet (`/extranet`)
 
@@ -191,10 +226,10 @@ Pass `payment.checkout` straight to Razorpay Checkout.
 
 ## Not built yet
 
-- OTA connections for extranet hotels. The fastest route is an adapter for the hosted
-  QloApps Channel Manager (see docs/QLOAPPS_CHANNEL_MANAGER.md). Direct OTA connectors
-  each need partner certification.
+- Direct OTA connectors (without a channel manager in between) each need partner certification.
 - Automated Razorpay refunds for `NEEDS_REFUND` (currently flagged for ops).
 - Admin UI for creating hotels, room types and channel mappings (done via SQL or seed today).
 - Physical room numbers, room assignment and housekeeping status.
+- Revenue management (e.g. PriceLabs) feeding prices automatically.
+- Live test against the QloApps Channel Manager on a paid plan.
 - Booking modifications and cancellations after confirmation.

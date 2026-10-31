@@ -160,3 +160,30 @@ better for hotels that already use them.
 
 The two are not exclusive: Option A covers properties managed in our extranet, Option B
 covers hotels that already run a channel manager.
+
+## 7. The hosted CM, screen by screen (from the trial account), and our answer
+
+| CM screen / feature | What it does | Ours before | Ours now |
+|---|---|---|---|
+| **Channels > Add channel** (Booking.com: Property id, Currency, Test connection) | Maps one hotel to one OTA account; test call before saving | Subscriptions table, no UI | **Channels tab**: every connected channel with live sync health (pending, failed, last success, last error) and **Retry failed** |
+| **Room types** (name, total rooms, default occupancy, max adults/children/infants, colour) | Physical capacity + occupancy rules | `max_occupancy` only, no UI | **Setup tab**: create/edit room types with total rooms, base occupancy, max adults/children/infants. New room types open for sale automatically; changing total rooms shifts all future availability by the difference (sold rooms stay sold) |
+| **Rate plans, "Derived" mode** | A plan whose price follows a parent (+/- % or amount) | One default plan, no UI | **Rate plans**: manual or derived (+/- % or +/- INR), optional "follow parent restrictions". Derived prices are recalculated in the same transaction as every parent change, so checkout always reads a stored price |
+| **Price & inventory grid** with Rooms / Rate plan / Restrictions filters | One grid, switch what you see | One row per room type | Grid with a row per room type (rooms left) **and a row per rate plan** (price), plus a Restrictions view |
+| **Bulk update** | Many rooms/plans/dates at once | Single range per room | **Bulk update**: several room types and rate plans, date range, **weekday picker** (e.g. only Fri+Sat), any mix of fields; blank = unchanged |
+| **Full sync** | Re-push everything to all channels | Not available | **Sync all channels**: queues a full 365-day snapshot to every connected channel through the outbox |
+| **Restrictions**: Price, Stop sell, CTA, CTD, Min/Max LOS arrival, Min/Max LOS stay, Min/Max booking offset, Additional guest rates | Full OTA restriction set | Price, stop sell, CTA, CTD, min/max LOS arrival | **All of them**: plus min/max stay-through (checked on every night), min/max days before arrival, and extra adult / extra child prices per night |
+| Trial: "can not sync inventory and rates" | Paid plan needed to push | n/a | No such limit in our own system |
+
+Two things the CM screens show that we copy only partly, on purpose:
+- **Currency per channel:** we price in the hotel's currency (INR); converting per OTA is
+  done by the channel or the CM.
+- **Room type colour:** cosmetic, skipped.
+
+### More screens: PMS link, bookings, revenue management, configuration
+
+| CM screen | What it does | Ours |
+|---|---|---|
+| **PMS > General Settings**: Webservice key + URL + PMS timezone, Test Connection; "Properties / Rooms Mapping" tab | The CM calls the PMS to import hotels and room types | **Built**: `/api/cm_api/*` (test_connection, properties, room_types, ari, bookings, booking_notification). The owner gets the URL + key from Channels > Connect |
+| **Bookings**: Booking id, Guest, Channel name, Room type, Duration, Status, Booking date, Synced, Export | OTA bookings and whether they reached the PMS | Bookings tab shows OTA name, status, **Overbooked** flag, and exports CSV; OTA bookings are stored the moment the CM sends them |
+| **Revenue Management**: PriceLabs (prices, min stay, multi-unit, check-in/out restrictions) | Dynamic pricing pushes prices into the CM | Not built. Our bulk update API takes everything PriceLabs sets, so it could plug in later |
+| **Configurations**: "Days to set inventory & rates data" (max 730), "Availability update mode outside range", **Reset availability**; "data checked once every 24 hours" | Rolling window and a repair button | **Built**: rolling selling window (hourly, not daily) and Reset availability (total rooms minus all bookings) |

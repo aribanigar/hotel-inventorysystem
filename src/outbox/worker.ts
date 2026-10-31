@@ -13,6 +13,7 @@
  *    crashed worker's rows are picked up again after the lease expires.
  */
 import { pool } from '../db/pool.js';
+import { pushQloAri } from '../channels/qloappsCm.js';
 import { bookExternal } from '../inventory/external.js';
 import { hmacSha256Hex } from '../lib/crypto.js';
 import { AppError } from '../lib/errors.js';
@@ -25,7 +26,7 @@ const LEASE_SECONDS = 60;
 
 interface OutboxRow {
   id: string;
-  event_type: 'ARI_CHANGED' | 'RESERVATION_CREATED' | 'SUPPLIER_BOOK';
+  event_type: 'ARI_CHANGED' | 'RESERVATION_CREATED' | 'SUPPLIER_BOOK' | 'QLO_ARI_PUSH';
   hotel_id: string;
   subscription_id: string | null;
   payload: Record<string, unknown>;
@@ -60,6 +61,7 @@ export async function processOutboxBatch(limit = 20): Promise<number> {
 async function deliverOne(row: OutboxRow): Promise<void> {
   try {
     if (row.event_type === 'SUPPLIER_BOOK') await finaliseSupplierBooking(row);
+    else if (row.event_type === 'QLO_ARI_PUSH') await pushToQloCm(row);
     else await deliverToSubscriber(row);
     await pool.query(`UPDATE ari_outbox SET status = 'DONE', processed_at = now(), last_error = NULL, locked_until = NULL WHERE id = $1`, [row.id]);
   } catch (err) {
@@ -128,7 +130,8 @@ async function buildAriSnapshot(payload: Record<string, unknown>) {
     const rates = c.ratePlanId
       ? (
           await pool.query(
-            `SELECT stay_date, price_minor, currency, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell
+            `SELECT stay_date, price_minor, currency, min_los, max_los, closed_to_arrival, closed_to_departure, stop_sell,
+                    min_stay_through, max_stay_through, min_advance_days, max_advance_days, extra_adult_minor, extra_child_minor
                FROM daily_rates WHERE rate_plan_id = $1 AND stay_date BETWEEN $2 AND $3 ORDER BY stay_date`,
             [c.ratePlanId, c.from, c.to],
           )
@@ -137,6 +140,20 @@ async function buildAriSnapshot(payload: Record<string, unknown>) {
     out.push({ ...c, availability: inv.rows, rates });
   }
   return { changes: out, cause: payload.cause ?? null };
+}
+
+/** ARI to the hosted QloApps Channel Manager (it then updates every OTA). */
+async function pushToQloCm(row: OutboxRow): Promise<void> {
+  const changes = (row.payload.changes as Array<{ roomTypeId: string; from: string; to: string }>) ?? [];
+  try {
+    await pushQloAri(row.hotel_id, changes.map((c) => ({ roomTypeId: c.roomTypeId, from: c.from, to: c.to })));
+  } catch (err) {
+    if (err instanceof HttpCallError && err.kind === 'HTTP' && !err.retryable && err.status !== 401) {
+      throw new PermanentFailure(`QloApps CM rejected ARI: HTTP ${err.status} ${err.bodySnippet ?? err.message}`);
+    }
+    if (err instanceof AppError && err.code === 'VALIDATION_ERROR') throw new PermanentFailure(err.message);
+    throw err;
+  }
 }
 
 async function finaliseSupplierBooking(row: OutboxRow): Promise<void> {

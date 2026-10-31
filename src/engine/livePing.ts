@@ -91,8 +91,13 @@ export async function executeLivePingCheck(
   // ---- a. Determine the inventory source --------------------------------------
   const product = await loadSellableProduct(pool, b.hotelId, b.roomTypeId, b.ratePlanId);
   assertValidStay(b.checkIn, b.checkOut, product.timezone);
-  if (b.adults + b.children > product.maxOccupancy * b.rooms) {
-    throw new AppError('VALIDATION_ERROR', `Maximum ${product.maxOccupancy} guests per room`, { maxOccupancy: product.maxOccupancy });
+  // Occupancy rules from the room type (max adults, max children, max guests per room).
+  if (b.adults > product.maxAdults * b.rooms || b.children > product.maxChildren * b.rooms || b.adults + b.children > product.maxOccupancy * b.rooms) {
+    throw new AppError('VALIDATION_ERROR', `This room takes up to ${product.maxAdults} adults and ${product.maxChildren} children (max ${product.maxOccupancy} guests)`, {
+      maxAdults: product.maxAdults,
+      maxChildren: product.maxChildren,
+      maxOccupancy: product.maxOccupancy,
+    });
   }
 
   const holdTtlMs = config.HOLD_TTL_SECONDS * 1000;
@@ -146,6 +151,8 @@ export async function executeLivePingCheck(
           db: client,
           lock: 'update',
           rooms: b.rooms,
+          adults: b.adults,
+          children: b.children,
           ratePlanId: product.ratePlanId,
         });
         assertSellable(live, b.rooms);
@@ -235,7 +242,7 @@ export async function executeLivePingCheck(
 /** e. Explicit, machine-readable reasons for "you can't buy this". */
 function assertSellable(live: LiveInventory, rooms: number): void {
   if (live.available && live.availableRooms >= rooms) return;
-  const restricted = ['STOP_SELL', 'MIN_LOS', 'MAX_LOS', 'CLOSED_TO_ARRIVAL', 'CLOSED_TO_DEPARTURE'].includes(live.reason ?? '');
+  const restricted = ['STOP_SELL', 'MIN_LOS', 'MAX_LOS', 'CLOSED_TO_ARRIVAL', 'CLOSED_TO_DEPARTURE', 'ADVANCE_PURCHASE'].includes(live.reason ?? '');
   throw new AppError(
     restricted ? 'RESTRICTED' : 'SOLD_OUT',
     restricted ? 'These dates are not bookable for this room' : 'This room is no longer available for your dates',

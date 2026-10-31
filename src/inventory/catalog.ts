@@ -13,6 +13,9 @@ export interface SellableProduct {
   roomTypeId: string;
   roomName: string;
   maxOccupancy: number;
+  baseOccupancy: number;
+  maxAdults: number;
+  maxChildren: number;
   supplierRoomCode: string | null;
   ratePlanId: string | null;
 }
@@ -33,7 +36,7 @@ export async function loadSellableProduct(
   const { rows } = await db.query(
     `SELECT h.id AS hotel_id, h.name AS hotel_name, h.inventory_source AS source, h.timezone, h.currency,
             h.supplier_code, h.supplier_hotel_code,
-            rt.id AS room_type_id, rt.name AS room_name, rt.max_occupancy, rt.supplier_room_code,
+            rt.id AS room_type_id, rt.name AS room_name, rt.max_occupancy, rt.base_occupancy, rt.max_adults, rt.max_children, rt.supplier_room_code,
             rp.id AS rate_plan_id
        FROM hotels h
        JOIN room_types rt ON rt.hotel_id = h.id AND rt.id = $2 AND rt.is_active
@@ -68,6 +71,9 @@ export async function loadSellableProduct(
     roomTypeId: r.room_type_id,
     roomName: r.room_name,
     maxOccupancy: r.max_occupancy,
+    baseOccupancy: r.base_occupancy,
+    maxAdults: r.max_adults,
+    maxChildren: r.max_children,
     supplierRoomCode: r.supplier_room_code,
     ratePlanId: r.rate_plan_id,
   };

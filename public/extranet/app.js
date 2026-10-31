@@ -5,28 +5,27 @@
 const API = '/api/v1/hotelier';
 const DAYS = 14;
 const SOURCES = [
-  ['WALK_IN', 'Walk-in'],
-  ['PHONE', 'Phone'],
-  ['WHATSAPP', 'WhatsApp'],
-  ['TRAVEL_AGENT', 'Travel agent'],
-  ['OTHER_OTA', 'Other OTA'],
-  ['OTHER', 'Other'],
+  ['WALK_IN', 'Walk-in'], ['PHONE', 'Phone'], ['WHATSAPP', 'WhatsApp'],
+  ['TRAVEL_AGENT', 'Travel agent'], ['OTHER_OTA', 'Other OTA'], ['OTHER', 'Other'],
 ];
-const STATUS_LABEL = {
-  CONFIRMED: 'Confirmed', CHECKED_IN: 'Checked in', CHECKED_OUT: 'Checked out', CANCELLED: 'Cancelled', NO_SHOW: 'No-show',
-};
+const STATUS_LABEL = { CONFIRMED: 'Confirmed', CHECKED_IN: 'Checked in', CHECKED_OUT: 'Checked out', CANCELLED: 'Cancelled', NO_SHOW: 'No-show' };
 const NEXT_ACTIONS = {
   CONFIRMED: [['CHECKED_IN', 'Check in', 'btn-primary'], ['NO_SHOW', 'No-show', 'btn-ghost'], ['CANCELLED', 'Cancel', 'btn-danger']],
   CHECKED_IN: [['CHECKED_OUT', 'Check out', 'btn-primary']],
 };
+const MEALS = { EP: 'Room only', CP: 'Breakfast', MAP: 'Breakfast + dinner', AP: 'All meals' };
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const RANK = { frontdesk: 1, manager: 2, owner: 3 };
 
-const state = { user: null, hotels: [], hotel: null, calStart: null, calendar: null, editing: null };
+const state = {
+  user: null, hotels: [], hotel: null, calStart: null, calendar: null, setup: null,
+  view: { rooms: true, rates: true, restrictions: false },
+  update: null,
+};
 
 // ---------------------------------------------------------------- utilities
 const $ = (sel) => document.querySelector(sel);
 
-/** Tiny DOM builder: h('div', { class: 'x', onclick }, 'text', child) */
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -34,6 +33,7 @@ function h(tag, attrs = {}, ...children) {
     if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
     else if (k === 'class') el.className = v;
     else if (k === 'dataset') Object.assign(el.dataset, v);
+    else if (k === 'checked' || k === 'value') el[k] = v;
     else el.setAttribute(k, v === true ? '' : String(v));
   }
   for (const c of children.flat()) {
@@ -49,17 +49,19 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
 const fmtDay = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', timeZone: 'UTC' });
 const fmtDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const fmtLong = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+const fmtWhen = (ts) => (ts ? new Date(ts).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'never');
 const inr = (minor, currency = 'INR') =>
   minor === null || minor === undefined ? '' : new Intl.NumberFormat('en-IN', { style: 'currency', currency, maximumFractionDigits: minor % 100 ? 2 : 0 }).format(minor / 100);
-const inrShort = (minor) => (minor === null ? '' : minor >= 100000 ? `${(minor / 100000).toFixed(minor % 100000 ? 1 : 0)}k` : String(Math.round(minor / 100)));
+const inrShort = (minor) => (minor === null || minor === undefined ? '' : minor >= 100000 ? `${(minor / 100000).toFixed(minor % 100000 ? 1 : 0)}k` : String(Math.round(minor / 100)));
 
-/** "8,500.50" -> 850050 paise, exactly (no float math). Null for blank, NaN for junk. */
-function toPaise(text) {
+/** "8,500.50" -> 850050 paise, exactly. Null for blank, NaN for junk. allowZero for extras. */
+function toPaise(text, allowZero = false) {
   const s = String(text ?? '').replace(/[,\s]/g, '').replace(/^(Rs\.?|INR)/i, '');
   if (s === '') return null;
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return NaN;
   const [whole, frac = ''] = s.split('.');
-  return Number(whole) * 100 + Number((frac + '00').slice(0, 2));
+  const v = Number(whole) * 100 + Number((frac + '00').slice(0, 2));
+  return v === 0 && !allowZero ? NaN : v;
 }
 
 let toastTimer;
@@ -102,22 +104,29 @@ async function api(method, path, body) {
   return data;
 }
 
-/** Human message for an API error, with the specifics the hotelier needs. */
 function explain(err) {
   if (err.code === 'SOLD_OUT' && err.details?.nights) {
     const parts = err.details.nights.map((n) => (n.loaded === false ? `${fmtDate(n.date)} (no rooms set)` : `${fmtDate(n.date)} (${n.available} left)`));
     return `Not enough rooms: ${parts.join(', ')}.`;
   }
   if (err.code === 'INVENTORY_BUSY') return 'Someone is booking these dates right now. Try again in a moment.';
-  if (err.code === 'VALIDATION_ERROR' && err.details?.issues?.fieldErrors) {
-    const f = Object.entries(err.details.issues.fieldErrors)[0];
+  if (err.code === 'VALIDATION_ERROR' && err.details?.issues) {
+    const f = Object.entries(err.details.issues.fieldErrors ?? {})[0];
     if (f) return `${f[0]}: ${f[1][0]}`;
+    if (err.details.issues.formErrors?.[0]) return err.details.issues.formErrors[0];
   }
   return err.message;
 }
 
-const canEdit = () => state.hotel && state.hotel.source === 'EXTRANET' && RANK[state.hotel.role] >= RANK.manager;
-const canSell = () => state.hotel && state.hotel.source === 'EXTRANET';
+function showErr(el, msg) {
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+const role = () => RANK[state.hotel?.role] ?? 0;
+const managed = () => state.hotel?.source === 'EXTRANET';
+const canEdit = () => managed() && role() >= RANK.manager;
+const canSell = () => managed();
 
 // ---------------------------------------------------------------- auth
 function showLogin() {
@@ -139,8 +148,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     f.password.value = '';
     await boot();
   } catch (ex) {
-    err.textContent = ex.message;
-    err.hidden = false;
+    showErr(err, ex.message);
   } finally {
     btn.disabled = false;
   }
@@ -157,25 +165,22 @@ async function boot() {
   try {
     me = await api('GET', '/me');
   } catch {
-    return; // api() already showed the login view on 401
+    return;
   }
   state.user = me.user;
   state.hotels = me.hotels;
   $('#user-name').textContent = me.user.name;
-  const sel = $('#hotel-select');
-  sel.replaceChildren(...me.hotels.map((ht) => h('option', { value: ht.id }, ht.name)));
+  $('#hotel-select').replaceChildren(...me.hotels.map((ht) => h('option', { value: ht.id }, ht.name)));
+  $('#login-view').hidden = true;
+  $('#app-view').hidden = false;
   if (!me.hotels.length) {
-    $('#login-view').hidden = true;
-    $('#app-view').hidden = false;
     $('#cal-grid').replaceChildren(h('div', { class: 'empty' }, 'Your account has no hotels yet. Ask your administrator for access.'));
     return;
   }
   let remembered = null;
   try { remembered = localStorage.getItem('hx_hotel'); } catch { /* storage blocked */ }
   const pick = me.hotels.find((x) => x.id === remembered) ?? me.hotels[0];
-  sel.value = pick.id;
-  $('#login-view').hidden = true;
-  $('#app-view').hidden = false;
+  $('#hotel-select').value = pick.id;
   await selectHotel(pick.id);
 }
 
@@ -183,6 +188,7 @@ $('#hotel-select').addEventListener('change', (e) => selectHotel(e.target.value)
 
 async function selectHotel(id) {
   state.hotel = state.hotels.find((x) => x.id === id);
+  state.setup = null;
   try { localStorage.setItem('hx_hotel', id); } catch { /* ignore */ }
   state.calStart = state.hotel.today;
   const labels = { EXTRANET: 'Managed here', CHANNEL_MANAGER: 'Channel manager', EXTERNAL_B2B: 'B2B supplier' };
@@ -190,35 +196,48 @@ async function selectHotel(id) {
   $('#bk-from').value = state.hotel.today;
   $('#bk-to').value = addDays(state.hotel.today, 30);
   for (const b of [$('#new-booking-btn'), $('#new-booking-btn-2')]) b.hidden = !canSell();
+  $('#bulk-btn').hidden = !canEdit();
+  for (const t of ['setup', 'channels']) document.querySelector(`.tab[data-tab=${t}]`).hidden = role() < RANK.manager;
+  if (role() < RANK.manager && ['setup', 'channels', 'activity'].includes(currentTab())) selectTab('calendar');
   await loadCalendar();
-  if (currentTab() === 'bookings') loadBookings();
-  if (currentTab() === 'activity') loadActivity();
+  refreshTab();
 }
 
 // ---------------------------------------------------------------- tabs
 const currentTab = () => document.querySelector('.tab[aria-selected="true"]').dataset.tab;
-document.querySelectorAll('.tab').forEach((tab) =>
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
-    for (const name of ['calendar', 'bookings', 'activity']) $(`#tab-${name}`).hidden = name !== tab.dataset.tab;
-    if (tab.dataset.tab === 'bookings') loadBookings();
-    if (tab.dataset.tab === 'activity') loadActivity();
-  }),
-);
+function selectTab(name) {
+  document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+  for (const n of ['calendar', 'bookings', 'setup', 'channels', 'activity']) $(`#tab-${n}`).hidden = n !== name;
+  refreshTab();
+}
+function refreshTab() {
+  const t = currentTab();
+  if (t === 'bookings') loadBookings();
+  if (t === 'setup') loadSetup();
+  if (t === 'channels') loadChannels();
+  if (t === 'activity') loadActivity();
+}
+document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => selectTab(tab.dataset.tab)));
 
 // ---------------------------------------------------------------- calendar
 $('#cal-prev').addEventListener('click', () => { state.calStart = addDays(state.calStart, -DAYS); loadCalendar(); });
 $('#cal-next').addEventListener('click', () => { state.calStart = addDays(state.calStart, DAYS); loadCalendar(); });
 $('#cal-today').addEventListener('click', () => { state.calStart = state.hotel.today; loadCalendar(); });
+document.querySelectorAll('[data-view]').forEach((chip) =>
+  chip.addEventListener('click', () => {
+    state.view[chip.dataset.view] = !state.view[chip.dataset.view];
+    chip.setAttribute('aria-pressed', String(state.view[chip.dataset.view]));
+    if (state.calendar) renderCalendar(state.calendar);
+  }),
+);
 
 async function loadCalendar() {
-  const grid = $('#cal-grid');
   try {
     const data = await api('GET', `/hotels/${state.hotel.id}/calendar?from=${state.calStart}&days=${DAYS}`);
     state.calendar = data;
     renderCalendar(data);
   } catch (err) {
-    if (err.status !== 401) grid.replaceChildren(h('div', { class: 'empty' }, explain(err)));
+    if (err.status !== 401) $('#cal-grid').replaceChildren(h('div', { class: 'empty' }, explain(err)));
   }
 }
 
@@ -232,127 +251,238 @@ function renderCalendar(data) {
       : 'Rooms and rates for this hotel come from an external supplier and are view-only here.';
   }
   if (!data.roomTypes.length) {
-    $('#cal-grid').replaceChildren(h('div', { class: 'empty' }, 'No room types set up for this hotel yet.'));
+    $('#cal-grid').replaceChildren(h('div', { class: 'empty' }, canEdit() ? 'No room types yet. Add your first one in Setup.' : 'No room types set up for this hotel yet.'));
     return;
   }
   const today = state.hotel.today;
   const head = h('tr', {}, h('th', { class: 'room', scope: 'col' }, 'Room type'),
     data.dates.map((d) => h('th', { scope: 'col', class: [d === today ? 'today' : '', dow(d) === 0 || dow(d) === 6 ? 'weekend' : ''].join(' ') },
-      fmtDay(d), h('span', { class: 'dnum' }, new Date(d + 'T00:00:00Z').getUTCDate())),
-    ));
-  const rows = data.roomTypes.map((rt) =>
-    h('tr', {},
-      h('th', { class: 'room', scope: 'row' }, h('span', { class: 'rname' }, rt.name), h('span', { class: 'rplan' }, rt.ratePlan ? `${rt.ratePlan.name}` : 'No rate plan')),
-      rt.days.map((day) => h('td', {}, cellFor(rt, day, today))),
-    ),
-  );
+      fmtDay(d), h('span', { class: 'dnum' }, new Date(d + 'T00:00:00Z').getUTCDate()))));
+  const rows = [];
+  for (const rt of data.roomTypes) {
+    if (state.view.rooms || (!state.view.rates && !state.view.restrictions)) {
+      rows.push(h('tr', {},
+        h('th', { class: 'room', scope: 'row' }, h('span', { class: 'rname' }, rt.name), h('span', { class: 'rplan' }, 'Rooms left to sell')),
+        rt.days.map((day) => h('td', {}, roomCell(rt, day, today)))));
+    }
+    for (const plan of rt.ratePlans ?? []) {
+      if (state.view.rates) {
+        rows.push(h('tr', { class: 'plan' },
+          h('th', { class: 'room', scope: 'row' },
+            h('span', { class: 'rname' }, plan.name, plan.rateMode === 'DERIVED' ? h('span', { class: 'auto' }, 'AUTO') : null),
+            h('span', { class: 'rplan' }, plan.rule ? `follows ${plan.rule}` : MEALS[plan.mealPlan] ?? plan.mealPlan)),
+          plan.days.map((pd) => h('td', {}, priceCell(rt, plan, pd)))));
+      }
+      if (state.view.restrictions) {
+        rows.push(h('tr', { class: 'plan' },
+          h('th', { class: 'room', scope: 'row' }, h('span', { class: 'rname' }, plan.name), h('span', { class: 'rplan' }, 'Restrictions')),
+          plan.days.map((pd) => h('td', {}, restrictionCell(rt, plan, pd)))));
+      }
+    }
+  }
   $('#cal-grid').replaceChildren(h('table', { class: 'cal' }, h('thead', {}, head), h('tbody', {}, rows)));
 }
 
-function cellFor(rt, day, today) {
+function roomCell(rt, day, today) {
   let cls = 'free';
   if (!day.loaded) cls = 'unloaded';
   else if (day.stopSell) cls = 'closed';
   else if (day.available === 0) cls = 'out';
   else if (day.available === 1) cls = 'low';
   const sold = day.soldOffline + day.soldOnline;
-  const tags = [sold ? `${sold} sold` : '', day.held ? `${day.held} in checkout` : '', day.minLos > 1 ? `min ${day.minLos}n` : '']
-    .filter(Boolean).join(' · ');
-  const label = `${rt.name}, ${fmtLong(day.date)}: ${day.loaded ? `${day.available} left` : 'no rooms set'}${day.stopSell ? ', closed' : ''}${day.priceMinor ? `, ${inr(day.priceMinor)}` : ''}`;
-  return h('button', { type: 'button', class: `cell ${cls}${day.date < today ? ' past' : ''}`, 'aria-label': label, onclick: () => openEditor(rt, day) },
+  const tags = [sold ? `${sold} sold` : '', day.held ? `${day.held} in checkout` : ''].filter(Boolean).join(' · ');
+  const label = `${rt.name}, ${fmtLong(day.date)}: ${day.loaded ? `${day.available} left` : 'no rooms set'}${day.stopSell ? ', closed' : ''}`;
+  return h('button', { type: 'button', class: `cell ${cls}${day.date < today ? ' past' : ''}`, 'aria-label': label, onclick: () => openUpdate({ rt, date: day.date }) },
     h('span', { class: 'avail' }, day.loaded ? day.available : '-'),
     h('span', { class: 'price' }, day.priceMinor ? inrShort(day.priceMinor) : ''),
-    tags ? h('span', { class: 'tags' }, tags) : null,
-  );
+    tags ? h('span', { class: 'tags' }, tags) : null);
 }
 
-// ---------------------------------------------------------------- day/range editor
-const editForm = $('#edit-form');
-const dirty = new Set();
-editForm.addEventListener('input', (e) => e.target.name && dirty.add(e.target.name));
-editForm.addEventListener('change', (e) => e.target.name && dirty.add(e.target.name));
+function priceCell(rt, plan, pd) {
+  const cls = ['pcell', plan.rateMode === 'DERIVED' ? 'derived' : '', pd.stopSell ? 'closed' : '', pd.priceMinor ? '' : 'empty'].join(' ');
+  const label = `${plan.name}, ${fmtLong(pd.date)}: ${pd.priceMinor ? inr(pd.priceMinor) : 'no price'}${pd.stopSell ? ', closed' : ''}`;
+  return h('button', { type: 'button', class: cls, 'aria-label': label, onclick: () => openUpdate({ rt, plan, date: pd.date }) },
+    pd.priceMinor ? inrShort(pd.priceMinor) : 'set');
+}
 
-function openEditor(rt, day) {
-  state.editing = { rt, day };
-  dirty.clear();
-  $('#edit-title').textContent = rt.name;
-  $('#edit-sub').textContent = `${fmtLong(day.date)}${rt.ratePlan ? ` · ${rt.ratePlan.name}` : ''}`;
-  $('#edit-stats').replaceChildren(
-    stat(day.loaded ? day.available : '-', 'left to sell'),
-    stat(day.soldOffline, 'sold offline'),
-    stat(day.soldOnline, 'sold online'),
-    stat(day.held, 'in checkout now'),
-  );
-  editForm.startDate.value = day.date;
-  editForm.endDate.value = day.date;
-  editForm.availability.value = day.loaded ? day.available : '';
-  editForm.price.value = day.priceMinor ? (day.priceMinor / 100).toFixed(day.priceMinor % 100 ? 2 : 0) : '';
-  editForm.minLos.value = day.minLos ?? 1;
-  editForm.stopSell.checked = day.stopSell;
-  editForm.closedToArrival.checked = day.closedToArrival;
-  editForm.closedToDeparture.checked = day.closedToDeparture;
+function restrictionCell(rt, plan, pd) {
+  const tags = [];
+  if (pd.stopSell) tags.push(['CLOSED', 'cl']);
+  if (pd.closedToArrival) tags.push(['CTA', 'cl']);
+  if (pd.closedToDeparture) tags.push(['CTD', 'cl']);
+  if (pd.minLos > 1) tags.push([`MIN${pd.minLos}`, '']);
+  if (pd.maxLos) tags.push([`MAX${pd.maxLos}`, '']);
+  if (pd.minStayThrough > 1) tags.push([`THR${pd.minStayThrough}`, '']);
+  if (pd.minAdvanceDays > 0) tags.push([`ADV${pd.minAdvanceDays}`, '']);
+  if (pd.extraAdultMinor) tags.push(['+AD', '']);
+  return h('button', { type: 'button', class: 'pcell', 'aria-label': `${plan.name} restrictions ${fmtLong(pd.date)}: ${tags.map((t) => t[0]).join(', ') || 'none'}`, onclick: () => openUpdate({ rt, plan, date: pd.date }) },
+    tags.length ? h('span', { class: 'rtags' }, tags.map(([t, c]) => h('span', { class: `rtag ${c}` }, t))) : h('span', { class: 'muted' }, '-'));
+}
+
+// ---------------------------------------------------------------- update dialog (single + bulk)
+const uForm = $('#update-form');
+$('#weekday-chips').replaceChildren(...WEEKDAYS.map((d, i) =>
+  h('button', { type: 'button', class: 'chip', 'aria-pressed': 'true', dataset: { dow: String(i) }, onclick: (e) => {
+    const c = e.currentTarget;
+    c.setAttribute('aria-pressed', String(c.getAttribute('aria-pressed') !== 'true'));
+  } }, d)));
+$('#bulk-btn').addEventListener('click', () => openUpdate({}));
+
+/** ctx: {} for bulk, {rt, date} from a room cell, {rt, plan, date} from a plan cell. */
+function openUpdate(ctx) {
+  if (!state.calendar) return;
+  state.update = ctx;
+  uForm.reset();
+  document.querySelectorAll('#weekday-chips .chip').forEach((c) => c.setAttribute('aria-pressed', 'true'));
+  const single = !!ctx.rt;
+  const date = ctx.date ?? (state.calStart > state.hotel.today ? state.calStart : state.hotel.today);
+  uForm.startDate.value = date;
+  uForm.endDate.value = single ? date : addDays(date, 6);
+  $('#update-title').textContent = single ? (ctx.plan ? `${ctx.rt.name}: ${ctx.plan.name}` : ctx.rt.name) : 'Bulk update';
+  $('#update-sub').textContent = single ? `${fmtLong(date)}. Empty fields stay as they are.` : 'Pick rooms, plans, dates and weekdays. Empty fields stay as they are.';
+
+  // Scope: room types and their plans.
+  const scope = state.calendar.roomTypes.map((rt) => {
+    const rtOn = !single || rt.id === ctx.rt.id;
+    return h('div', { class: 'rt' },
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'rt', value: rt.id, checked: rtOn }), rt.name),
+      h('div', { class: 'plans' }, (rt.ratePlans ?? []).map((p) =>
+        h('label', { class: 'check' },
+          h('input', { type: 'checkbox', name: 'rp', value: p.id, dataset: { rt: rt.id, derived: p.rateMode === 'DERIVED' ? '1' : '', follow: p.followParentRestrictions ? '1' : '' },
+            checked: single ? (ctx.plan ? p.id === ctx.plan.id : rt.id === ctx.rt.id && p.isDefault) : p.isDefault && p.rateMode !== 'DERIVED' }),
+          `${p.name}${p.rateMode === 'DERIVED' ? ' (auto)' : ''}`))));
+  });
+  $('#update-scope').replaceChildren(...scope);
+
+  // Current values as placeholders, so the hotelier sees what is there now.
+  const stats = $('#update-stats');
+  stats.hidden = !single;
+  const setPh = (name, v) => { uForm[name].placeholder = v === null || v === undefined || v === '' ? '' : `now ${v}`; };
+  for (const n of ['availability', 'price', 'extraAdult', 'extraChild', 'minLos', 'maxLos', 'minStayThrough', 'maxStayThrough', 'minAdvanceDays', 'maxAdvanceDays']) uForm[n].placeholder = '';
+  uForm.maxLos.placeholder = uForm.maxStayThrough.placeholder = uForm.maxAdvanceDays.placeholder = '0 = none';
+  if (single) {
+    const day = ctx.rt.days.find((d) => d.date === date);
+    stats.replaceChildren(stat(day.loaded ? day.available : '-', 'left to sell'), stat(day.soldOffline, 'sold offline'), stat(day.soldOnline, 'sold online'), stat(day.held, 'in checkout now'));
+    setPh('availability', day.loaded ? day.available : null);
+    const plan = ctx.plan ?? (ctx.rt.ratePlans ?? []).find((p) => p.isDefault);
+    const pd = plan?.days.find((d) => d.date === date);
+    if (pd) {
+      setPh('price', pd.priceMinor ? pd.priceMinor / 100 : null);
+      setPh('extraAdult', pd.extraAdultMinor ? pd.extraAdultMinor / 100 : 0);
+      setPh('extraChild', pd.extraChildMinor ? pd.extraChildMinor / 100 : 0);
+      setPh('minLos', pd.minLos);
+      setPh('minStayThrough', pd.minStayThrough);
+      setPh('minAdvanceDays', pd.minAdvanceDays);
+      if (pd.maxLos) setPh('maxLos', pd.maxLos);
+      if (pd.maxStayThrough) setPh('maxStayThrough', pd.maxStayThrough);
+      if (pd.maxAdvanceDays) setPh('maxAdvanceDays', pd.maxAdvanceDays);
+    }
+  }
   const editable = canEdit();
-  for (const el of editForm.querySelectorAll('input')) el.disabled = !editable;
-  $('#edit-save').hidden = !editable;
-  $('#edit-readonly').hidden = editable || state.hotel.source !== 'EXTRANET';
-  $('#edit-sell').hidden = !canSell();
-  $('#edit-error').hidden = true;
-  $('#edit-dialog').showModal();
+  for (const el of uForm.querySelectorAll('input, select')) el.disabled = !editable;
+  $('#update-save').hidden = !editable;
+  $('#update-sell').hidden = !(single && canSell());
+  const note = $('#update-note');
+  note.hidden = editable;
+  note.textContent = editable ? '' : managed() ? 'Your role can view this but not change it.' : 'This hotel is managed by its channel manager or supplier.';
+  $('#update-error').hidden = true;
+  $('#update-dialog').showModal();
 }
 
 const stat = (value, label) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label));
 
-$('#edit-sell').addEventListener('click', () => {
-  const { rt, day } = state.editing;
-  $('#edit-dialog').close();
-  openBooking({ roomTypeId: rt.id, checkIn: day.date });
+// Ticking a room type ticks its default plan; unticking clears its plans.
+$('#update-scope').addEventListener('change', (e) => {
+  if (e.target.name !== 'rt') return;
+  for (const p of document.querySelectorAll(`#update-scope input[name=rp][data-rt="${e.target.value}"]`)) {
+    if (!e.target.checked) p.checked = false;
+  }
 });
 
-$('#edit-save').addEventListener('click', async () => {
-  const f = editForm;
-  const err = $('#edit-error');
+$('#update-sell').addEventListener('click', () => {
+  const { rt, date } = state.update;
+  $('#update-dialog').close();
+  openBooking({ roomTypeId: rt.id, checkIn: date });
+});
+
+$('#update-save').addEventListener('click', async () => {
+  const f = uForm;
+  const err = $('#update-error');
   err.hidden = true;
-  const { rt } = state.editing;
   const startDate = f.startDate.value;
   const endDate = f.endDate.value;
   if (!startDate || !endDate || endDate < startDate) return showErr(err, 'Choose a valid date range.');
-  if (!dirty.size || [...dirty].every((n) => n === 'startDate' || n === 'endDate')) return showErr(err, 'Nothing changed yet.');
+  if (nightsBetween(startDate, endDate) > 730) return showErr(err, 'At most 2 years at a time.');
+  const weekdays = [...document.querySelectorAll('#weekday-chips .chip')].filter((c) => c.getAttribute('aria-pressed') === 'true').map((c) => Number(c.dataset.dow));
+  if (!weekdays.length) return showErr(err, 'Pick at least one day of the week.');
+  const wd = weekdays.length < 7 ? { weekdays } : {};
 
-  // Room-level: rooms left + closing. Rate-level: price, min stay, arrival/departure.
-  const roomUpdate = { roomTypeId: rt.id, startDate, endDate };
-  const rateUpdate = { roomTypeId: rt.id, ratePlanId: rt.ratePlan?.id, startDate, endDate };
-  if (dirty.has('availability')) {
-    const n = Number(f.availability.value);
-    if (f.availability.value === '' || !Number.isInteger(n) || n < 0) return showErr(err, 'Rooms left must be 0 or more.');
-    roomUpdate.availability = n;
-  }
-  if (dirty.has('stopSell')) roomUpdate.stopSell = f.stopSell.checked;
-  if (dirty.has('price')) {
-    const p = toPaise(f.price.value);
-    if (!(p > 0)) return showErr(err, 'Enter a price like 8500 or 8500.50.');
-    rateUpdate.priceMinor = p;
-  }
-  if (dirty.has('minLos')) {
-    const m = Number(f.minLos.value);
-    if (!Number.isInteger(m) || m < 1) return showErr(err, 'Minimum stay must be 1 or more nights.');
-    rateUpdate.minLos = m;
-  }
-  if (dirty.has('closedToArrival')) rateUpdate.closedToArrival = f.closedToArrival.checked;
-  if (dirty.has('closedToDeparture')) rateUpdate.closedToDeparture = f.closedToDeparture.checked;
+  const num = (name, min) => {
+    const v = f[name].value.trim();
+    if (v === '') return undefined;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < min) throw new Error(`${f[name].closest('label').firstChild.textContent.trim()} must be a whole number`);
+    return n;
+  };
+  const tri = (name) => (f[name].value === '' ? undefined : f[name].value === 'true');
+  const money = (name, allowZero) => {
+    const p = toPaise(f[name].value, allowZero);
+    if (Number.isNaN(p)) throw new Error('Enter amounts like 8500 or 8500.50.');
+    return p === null ? undefined : p;
+  };
 
+  let room, rate;
+  try {
+    const maxLos = num('maxLos', 0);
+    const maxThr = num('maxStayThrough', 0);
+    const maxAdv = num('maxAdvanceDays', 0);
+    room = { availability: num('availability', 0), stopSell: tri('stopSell') };
+    rate = {
+      priceMinor: money('price', false),
+      extraAdultMinor: money('extraAdult', true),
+      extraChildMinor: money('extraChild', true),
+      minLos: num('minLos', 1),
+      ...(maxLos !== undefined ? { maxLos: maxLos || null } : {}),
+      minStayThrough: num('minStayThrough', 1),
+      ...(maxThr !== undefined ? { maxStayThrough: maxThr || null } : {}),
+      minAdvanceDays: num('minAdvanceDays', 0),
+      ...(maxAdv !== undefined ? { maxAdvanceDays: maxAdv || null } : {}),
+      closedToArrival: tri('closedToArrival'),
+      closedToDeparture: tri('closedToDeparture'),
+      stopSell: tri('planStopSell'),
+    };
+  } catch (ex) {
+    return showErr(err, ex.message);
+  }
+  const clean = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+  room = clean(room);
+  rate = clean(rate);
+  if (!Object.keys(room).length && !Object.keys(rate).length) return showErr(err, 'Nothing to change: fill in at least one field.');
+
+  const rts = [...document.querySelectorAll('#update-scope input[name=rt]:checked')].map((x) => x.value);
+  const plans = [...document.querySelectorAll('#update-scope input[name=rp]:checked')];
   const updates = [];
-  if (Object.keys(roomUpdate).length > 3) updates.push(roomUpdate);
-  if (Object.keys(rateUpdate).length > 4) {
-    if (!rt.ratePlan) return showErr(err, 'This room has no rate plan yet, so prices cannot be set.');
-    updates.push(rateUpdate);
+  if (Object.keys(room).length) {
+    if (!rts.length) return showErr(err, 'Tick at least one room type.');
+    for (const id of rts) updates.push({ roomTypeId: id, startDate, endDate, ...wd, ...room });
   }
-  const btn = $('#edit-save');
+  if (Object.keys(rate).length) {
+    if (!plans.length) return showErr(err, 'Tick at least one rate plan for price or restriction changes.');
+    const priceish = ['priceMinor', 'extraAdultMinor', 'extraChildMinor'].some((k) => k in rate);
+    for (const p of plans) {
+      if (p.dataset.derived && priceish) return showErr(err, 'Prices of "auto" plans follow their parent plan. Untick them or change the parent.');
+      if (p.dataset.derived && p.dataset.follow) return showErr(err, 'That "auto" plan follows its parent\'s restrictions too. Change the parent instead.');
+      updates.push({ roomTypeId: p.dataset.rt, ratePlanId: p.value, startDate, endDate, ...wd, ...rate });
+    }
+  }
+  if (updates.length > 500) return showErr(err, 'Too many combinations at once. Narrow it down.');
+  const btn = $('#update-save');
   btn.disabled = true;
   try {
-    await api('PUT', `/hotels/${state.hotel.id}/ari`, { updates });
-    $('#edit-dialog').close();
-    const days = nightsBetween(startDate, endDate) + 1;
-    toast(`Saved for ${days} day${days > 1 ? 's' : ''}. All channels are being updated.`);
+    const r = await api('PUT', `/hotels/${state.hotel.id}/ari`, { updates });
+    $('#update-dialog').close();
+    const nights = r.inventoryRowsWritten + r.rateRowsWritten;
+    toast(`Saved (${nights} night${nights === 1 ? '' : 's'} updated${r.derivedRowsWritten ? `, ${r.derivedRowsWritten} auto prices recalculated` : ''}). Channels are being updated.`);
     await loadCalendar();
   } catch (ex) {
     if (ex.status !== 401) showErr(err, explain(ex));
@@ -361,18 +491,11 @@ $('#edit-save').addEventListener('click', async () => {
   }
 });
 
-function showErr(el, msg) {
-  el.textContent = msg;
-  el.hidden = false;
-}
-
 // ---------------------------------------------------------------- offline booking
 const bkForm = $('#booking-form');
 let bkSource = 'WALK_IN';
-$('#source-chips').replaceChildren(
-  ...SOURCES.map(([code, label]) =>
-    h('button', { type: 'button', class: 'chip', 'aria-pressed': String(code === bkSource), dataset: { code }, onclick: () => setSource(code) }, label)),
-);
+$('#source-chips').replaceChildren(...SOURCES.map(([code, label]) =>
+  h('button', { type: 'button', class: 'chip', 'aria-pressed': String(code === bkSource), dataset: { code }, onclick: () => setSource(code) }, label)));
 function setSource(code) {
   bkSource = code;
   document.querySelectorAll('#source-chips .chip').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.code === code)));
@@ -402,7 +525,6 @@ bkForm.addEventListener('input', (e) => {
 });
 bkForm.roomTypeId.addEventListener('change', updateEstimate);
 
-/** Shows the calendar price total when every night is in the loaded window. */
 function updateEstimate() {
   const out = $('#booking-estimate');
   out.textContent = '';
@@ -427,7 +549,7 @@ $('#booking-save').addEventListener('click', async () => {
   err.hidden = true;
   if (f.guestName.value.trim().length < 2) return showErr(err, 'Enter the guest name.');
   if (!f.checkIn.value || !f.checkOut.value || f.checkOut.value <= f.checkIn.value) return showErr(err, 'Check-out must be after check-in.');
-  const amount = toPaise(f.amount.value);
+  const amount = toPaise(f.amount.value, true);
   if (Number.isNaN(amount)) return showErr(err, 'Enter the amount like 17000 or 17000.50, or leave it empty.');
   const body = {
     roomTypeId: f.roomTypeId.value,
@@ -459,20 +581,21 @@ $('#booking-save').addEventListener('click', async () => {
   }
 });
 
-// ---------------------------------------------------------------- bookings list
+// ---------------------------------------------------------------- bookings
 $('#bk-refresh').addEventListener('click', loadBookings);
 
 async function loadBookings() {
   const list = $('#bk-list');
   const from = $('#bk-from').value;
   const to = $('#bk-to').value;
+  $('#bk-export').href = `${API}/hotels/${state.hotel.id}/reservations.csv?from=${from}&to=${to}`;
   try {
     const { reservations } = await api('GET', `/hotels/${state.hotel.id}/reservations?from=${from}&to=${to}`);
-    if (!reservations.length) {
-      list.replaceChildren(h('div', { class: 'empty' }, 'No bookings in these dates.'));
-      return;
-    }
-    list.replaceChildren(...reservations.map(bookingCard));
+    const over = reservations.filter((r) => r.overbooked && r.status === 'CONFIRMED');
+    const alert = $('#alert-banner');
+    alert.hidden = !over.length;
+    alert.textContent = over.length ? `${over.length} OTA booking${over.length > 1 ? 's' : ''} arrived for sold-out dates. Move the guest or contact the channel.` : '';
+    list.replaceChildren(...(reservations.length ? reservations.map(bookingCard) : [h('div', { class: 'empty' }, 'No bookings in these dates.')]));
   } catch (err) {
     if (err.status !== 401) list.replaceChildren(h('div', { class: 'empty' }, explain(err)));
   }
@@ -480,28 +603,26 @@ async function loadBookings() {
 
 function bookingCard(r) {
   const nights = nightsBetween(r.check_in, r.check_out);
-  const offline = r.channel === 'OFFLINE';
-  const sourceLabel = offline ? (SOURCES.find(([c]) => c === r.source)?.[1] ?? r.source) : 'Website';
-  const actions = offline && canSell() ? (NEXT_ACTIONS[r.status] ?? []) : [];
+  const editableRow = r.channel !== 'ONLINE';
+  const sourceLabel = r.channel === 'ONLINE' ? 'Website' : r.channel === 'OTA' ? (r.source_detail || 'OTA') : (SOURCES.find(([c]) => c === r.source)?.[1] ?? r.source);
+  const actions = editableRow && canSell() ? (NEXT_ACTIONS[r.status] ?? []) : [];
   return h('article', { class: 'bk' },
     h('div', { class: 'bk-top' },
       h('span', { class: 'bk-name' }, r.guest_name || 'Guest'),
-      h('span', { class: `pill ${offline ? r.status : 'ONLINE'}` }, offline ? STATUS_LABEL[r.status] : 'Paid online'),
+      h('span', {},
+        r.overbooked && r.status === 'CONFIRMED' ? h('span', { class: 'pill NO_SHOW bad' }, 'Overbooked') : null, ' ',
+        h('span', { class: `pill ${r.channel === 'ONLINE' ? 'ONLINE' : r.status}` }, r.channel === 'ONLINE' ? 'Paid online' : STATUS_LABEL[r.status])),
     ),
     h('div', { class: 'bk-meta' },
       h('span', {}, `${fmtDate(r.check_in)} to ${fmtDate(r.check_out)} (${nights} night${nights > 1 ? 's' : ''})`),
       h('span', {}, `${r.rooms} x ${r.room_name}`),
-      h('span', {}, `${sourceLabel}${r.source_detail ? `: ${r.source_detail}` : ''}`),
+      h('span', {}, `${sourceLabel}${r.channel !== 'OTA' && r.source_detail ? `: ${r.source_detail}` : ''}`),
       r.amount_minor !== null ? h('span', {}, inr(Number(r.amount_minor), r.currency)) : null,
-      h('span', { class: 'muted' }, r.reference),
-    ),
+      h('span', { class: 'muted' }, r.reference)),
     r.guest_phone ? h('div', { class: 'bk-meta' }, h('a', { href: `tel:${r.guest_phone.replace(/[^+0-9]/g, '')}` }, r.guest_phone)) : null,
     r.notes ? h('div', { class: 'bk-meta' }, r.notes) : null,
-    actions.length
-      ? h('div', { class: 'bk-actions' }, actions.map(([to, label, cls]) =>
-          h('button', { type: 'button', class: `btn btn-sm ${cls}`, onclick: (e) => changeStatus(r, to, label, e.currentTarget) }, label)))
-      : null,
-  );
+    actions.length ? h('div', { class: 'bk-actions' }, actions.map(([to, label, cls]) =>
+      h('button', { type: 'button', class: `btn btn-sm ${cls}`, onclick: (e) => changeStatus(r, to, label, e.currentTarget) }, label))) : null);
 }
 
 async function changeStatus(r, to, label, btn) {
@@ -518,21 +639,330 @@ async function changeStatus(r, to, label, btn) {
   }
 }
 
+// ---------------------------------------------------------------- setup
+async function loadSetup() {
+  const body = $('#setup-body');
+  try {
+    state.setup = await api('GET', `/hotels/${state.hotel.id}/setup`);
+    renderSetup(state.setup);
+  } catch (err) {
+    if (err.status !== 401) body.replaceChildren(h('div', { class: 'empty' }, explain(err)));
+  }
+}
+
+function renderSetup(s) {
+  const edit = canEdit();
+  const settings = h('section', { class: 'card' },
+    h('div', { class: 'card-head' },
+      h('div', {}, h('h2', {}, 'Selling window'), h('p', { class: 'muted' }, 'Rooms and prices stay open this many days ahead. Every day the window moves forward and new dates copy your latest prices.')),
+    ),
+    edit
+      ? h('div', { class: 'row' },
+          h('label', {}, 'Days open ahead (0 = off, max 730)', h('input', { id: 'horizon-input', type: 'number', min: '0', max: '730', value: String(s.hotel.openHorizonDays), disabled: role() < RANK.owner })),
+          h('div', { class: 'toolbar-actions' },
+            role() >= RANK.owner ? h('button', { type: 'button', class: 'btn btn-primary', onclick: saveHorizon }, 'Save') : null,
+            h('button', { type: 'button', class: 'btn btn-danger', onclick: resetAvail }, 'Reset availability')))
+      : h('p', { class: 'muted' }, managed() ? 'Managers and owners can change setup.' : 'This hotel is set up in its channel manager.'),
+    edit ? h('p', { class: 'muted small' }, 'Reset availability recalculates rooms left for every future night as total rooms minus all bookings. Use it if numbers ever look wrong.') : null,
+  );
+
+  const rooms = s.roomTypes.map((rt) => h('section', { class: 'card' },
+    h('div', { class: 'card-head' },
+      h('div', {}, h('h2', {}, rt.name, rt.isActive ? null : h('span', { class: 'muted small' }, ' (inactive)')),
+        h('p', { class: 'muted' }, `${rt.totalRooms} room${rt.totalRooms === 1 ? '' : 's'} · price includes ${rt.baseOccupancy} · up to ${rt.maxAdults} adults, ${rt.maxChildren} children, ${rt.maxInfants} infants`)),
+      edit ? h('div', { class: 'toolbar-actions' },
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => openRoom(rt) }, 'Edit'),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => openPlan(rt, null) }, '+ Rate plan')) : null),
+    h('ul', { class: 'plan-list' }, rt.ratePlans.map((p) => h('li', {},
+      h('div', {},
+        h('div', {}, h('b', {}, p.name), p.isDefault ? h('span', { class: 'muted small' }, '  default') : null),
+        h('div', { class: 'meta' }, `${MEALS[p.mealPlan]}${p.rateMode === 'DERIVED' ? ` · follows ${p.parentName} ${p.deriveValue >= 0 ? '+' : ''}${p.deriveType === 'PERCENT' ? `${p.deriveValue}%` : inr(p.deriveValue)}${p.followParentRestrictions ? ', same restrictions' : ', own restrictions'}` : ' · own prices'}`)),
+      edit ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => openPlan(rt, p) }, 'Edit') : null))),
+  ));
+
+  const add = edit ? h('button', { type: 'button', class: 'btn btn-accent', onclick: () => openRoom(null) }, '+ Add room type') : null;
+  $('#setup-body').replaceChildren(settings, ...rooms, ...(add ? [h('div', {}, add)] : []));
+}
+
+async function saveHorizon() {
+  const v = Number($('#horizon-input').value);
+  if (!Number.isInteger(v) || v < 0 || v > 730) return toast('Days must be 0 to 730.', 'error');
+  try {
+    await api('PUT', `/hotels/${state.hotel.id}/settings`, { openHorizonDays: v });
+    toast(v ? `Open for sale ${v} days ahead.` : 'Rolling window turned off.');
+    loadCalendar();
+  } catch (err) {
+    if (err.status !== 401) toast(explain(err), 'error');
+  }
+}
+
+async function resetAvail() {
+  if (!window.confirm('Recalculate rooms left for all future nights from total rooms minus bookings? Channels will be updated.')) return;
+  try {
+    const r = await api('POST', `/hotels/${state.hotel.id}/reset-availability`, {});
+    toast(r.nightsCorrected ? `Corrected ${r.nightsCorrected} night(s).` : 'Everything already matched.');
+    loadCalendar();
+  } catch (err) {
+    if (err.status !== 401) toast(explain(err), 'error');
+  }
+}
+
+// Room type dialog
+const roomForm = $('#room-form');
+let roomEditing = null;
+function openRoom(rt) {
+  roomEditing = rt;
+  roomForm.reset();
+  $('#room-title').textContent = rt ? `Edit ${rt.name}` : 'New room type';
+  $('#room-create-only').hidden = !!rt;
+  $('#room-active-wrap').hidden = !rt;
+  const v = rt ?? { name: '', totalRooms: 1, baseOccupancy: 2, maxAdults: 2, maxChildren: 1, maxInfants: 1, isActive: true };
+  roomForm.name.value = v.name;
+  roomForm.totalRooms.value = v.totalRooms;
+  roomForm.baseOccupancy.value = v.baseOccupancy;
+  roomForm.maxAdults.value = v.maxAdults;
+  roomForm.maxChildren.value = v.maxChildren;
+  roomForm.maxInfants.value = v.maxInfants;
+  roomForm.isActive.checked = v.isActive;
+  const note = $('#room-note');
+  note.hidden = !rt;
+  note.textContent = rt ? 'Changing total rooms adds or removes that many rooms on every future night. Rooms already sold stay sold.' : '';
+  $('#room-error').hidden = true;
+  $('#room-dialog').showModal();
+}
+
+$('#room-save').addEventListener('click', async () => {
+  const f = roomForm;
+  const err = $('#room-error');
+  err.hidden = true;
+  const ints = ['totalRooms', 'baseOccupancy', 'maxAdults', 'maxChildren', 'maxInfants'].map((n) => [n, Number(f[n].value)]);
+  if (ints.some(([, v]) => !Number.isInteger(v) || v < 0)) return showErr(err, 'Use whole numbers.');
+  const body = { name: f.name.value.trim(), ...Object.fromEntries(ints) };
+  if (body.name.length < 2) return showErr(err, 'Enter a name.');
+  if (roomEditing) body.isActive = f.isActive.checked;
+  else {
+    const p = toPaise(f.price.value);
+    if (Number.isNaN(p)) return showErr(err, 'Enter the price like 6500.');
+    Object.assign(body, { ratePlanName: f.ratePlanName.value.trim() || 'Room only', mealPlan: f.mealPlan.value, ...(p ? { priceMinor: p } : {}) });
+  }
+  const btn = $('#room-save');
+  btn.disabled = true;
+  try {
+    if (roomEditing) {
+      const r = await api('PUT', `/hotels/${state.hotel.id}/room-types/${roomEditing.id}`, body);
+      toast(r.shiftedBy ? `Saved. ${r.shiftedBy > 0 ? 'Added' : 'Removed'} ${Math.abs(r.shiftedBy)} room(s) on every future night.` : 'Saved.');
+    } else {
+      await api('POST', `/hotels/${state.hotel.id}/room-types`, body);
+      toast(`${body.name} is open for sale.`);
+    }
+    $('#room-dialog').close();
+    await Promise.all([loadSetup(), loadCalendar()]);
+  } catch (ex) {
+    if (ex.status !== 401) showErr(err, explain(ex));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Rate plan dialog
+const planForm = $('#plan-form');
+let planCtx = null;
+let planMode = 'MANUAL';
+function setPlanMode(mode) {
+  planMode = mode;
+  document.querySelectorAll('#plan-form [data-mode]').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.mode === mode)));
+  $('#plan-derived').hidden = mode !== 'DERIVED';
+}
+document.querySelectorAll('#plan-form [data-mode]').forEach((c) => c.addEventListener('click', () => setPlanMode(c.dataset.mode)));
+
+function openPlan(rt, plan) {
+  planCtx = { rt, plan };
+  planForm.reset();
+  $('#plan-title').textContent = plan ? `Edit ${plan.name}` : 'New rate plan';
+  $('#plan-sub').textContent = rt.name;
+  // Parents: manual plans of this hotel (not the plan itself).
+  const parents = state.setup.roomTypes.flatMap((r) => r.ratePlans.filter((p) => p.rateMode === 'MANUAL' && p.id !== plan?.id).map((p) => ({ ...p, rtName: r.name })));
+  planForm.parentRatePlanId.replaceChildren(...parents.map((p) => h('option', { value: p.id }, `${p.rtName}: ${p.name}`)));
+  planForm.name.value = plan?.name ?? '';
+  planForm.mealPlan.value = plan?.mealPlan ?? 'CP';
+  planForm.isDefault.checked = !!plan?.isDefault;
+  setPlanMode(plan?.rateMode ?? 'MANUAL');
+  if (plan?.rateMode === 'DERIVED') {
+    planForm.parentRatePlanId.value = plan.parentRatePlanId;
+    planForm.deriveType.value = plan.deriveType;
+    planForm.deriveValue.value = plan.deriveType === 'PERCENT' ? String(plan.deriveValue) : String(plan.deriveValue / 100);
+    planForm.followParentRestrictions.checked = plan.followParentRestrictions;
+  } else {
+    const def = rt.ratePlans.find((p) => p.isDefault && p.rateMode === 'MANUAL');
+    if (def) planForm.parentRatePlanId.value = def.id;
+  }
+  $('#plan-error').hidden = true;
+  $('#plan-dialog').showModal();
+}
+
+$('#plan-save').addEventListener('click', async () => {
+  const f = planForm;
+  const err = $('#plan-error');
+  err.hidden = true;
+  const body = { roomTypeId: planCtx.rt.id, name: f.name.value.trim(), mealPlan: f.mealPlan.value, rateMode: planMode, isDefault: f.isDefault.checked };
+  if (body.name.length < 2) return showErr(err, 'Enter a name.');
+  if (planMode === 'DERIVED') {
+    const raw = f.deriveValue.value.trim().replace(/[,\s]/g, '');
+    if (!/^[+-]?\d+(\.\d{1,2})?$/.test(raw)) return showErr(err, 'Enter the adjustment like 15, -10 or -500.');
+    const n = Number(raw);
+    Object.assign(body, {
+      parentRatePlanId: f.parentRatePlanId.value,
+      deriveType: f.deriveType.value,
+      deriveValue: f.deriveType.value === 'PERCENT' ? n : Math.round(n * 100),
+      followParentRestrictions: f.followParentRestrictions.checked,
+    });
+    if (!body.parentRatePlanId) return showErr(err, 'Choose the plan to follow.');
+  }
+  const btn = $('#plan-save');
+  btn.disabled = true;
+  try {
+    if (planCtx.plan) await api('PUT', `/hotels/${state.hotel.id}/rate-plans/${planCtx.plan.id}`, body);
+    else await api('POST', `/hotels/${state.hotel.id}/rate-plans`, body);
+    $('#plan-dialog').close();
+    toast(planMode === 'DERIVED' ? 'Saved. Prices calculated for every date.' : 'Saved. Set its prices from the calendar.');
+    await Promise.all([loadSetup(), loadCalendar()]);
+  } catch (ex) {
+    if (ex.status !== 401) showErr(err, explain(ex));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------- channels
+async function loadChannels() {
+  const body = $('#channels-body');
+  try {
+    renderChannels(await api('GET', `/hotels/${state.hotel.id}/channels`));
+  } catch (err) {
+    if (err.status !== 401) body.replaceChildren(h('div', { class: 'empty' }, explain(err)));
+  }
+}
+
+function renderChannels(c) {
+  const owner = role() >= RANK.owner;
+  const cm = c.qloappsChannelManager;
+  const actions = h('section', { class: 'card' },
+    h('div', { class: 'card-head' },
+      h('div', {}, h('h2', {}, 'Sync'), h('p', { class: 'muted' }, 'Every change is sent to connected channels within seconds. Use full sync after connecting a new channel.')),
+      h('div', { class: 'toolbar-actions' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: doFullSync }, 'Sync all channels'),
+        h('button', { type: 'button', class: 'btn btn-ghost', onclick: doRetry }, 'Retry failed'))));
+
+  const cmCard = h('section', { class: 'card' },
+    h('div', { class: 'card-head' },
+      h('div', {}, h('h2', {}, 'QloApps Channel Manager'),
+        h('p', { class: 'muted' }, 'Reaches Booking.com, Expedia, MakeMyTrip/Goibibo, Agoda, Airbnb, Yatra, Hostelworld, Trip.com and more.')),
+      cm ? h('span', { id: 'cm-status', class: cm.failed ? 'bad' : cm.lastPushError ? 'bad' : 'ok' }, cm.failed || cm.lastPushError ? 'Needs attention' : 'Connected') : h('span', { id: 'cm-status', class: 'muted' }, 'Not connected')),
+    cm ? h('div', { class: 'kv' },
+      h('div', {}, h('b', {}, fmtWhen(cm.lastPushAt)), h('span', {}, 'last update sent')),
+      h('div', {}, h('b', {}, cm.pending), h('span', {}, 'waiting to send')),
+      h('div', {}, h('b', { class: cm.failed ? 'bad' : '' }, cm.failed), h('span', {}, 'failed')),
+      h('div', {}, h('b', {}, cm.hasCredentials ? 'Set' : 'Missing'), h('span', {}, 'API credentials'))) : null,
+    cm?.lastPushError ? h('p', { class: 'form-error' }, `Last error: ${cm.lastPushError}`) : null,
+    owner ? cmConnectForm(!!cm) : h('p', { class: 'muted small' }, 'The hotel owner can connect or change this.'));
+
+  const others = c.channels.length
+    ? c.channels.map((ch) => h('section', { class: 'card' },
+        h('div', { class: 'card-head' },
+          h('div', {}, h('h2', {}, ch.code), h('p', { class: 'muted' }, `${ch.endpointHost} · ${ch.events.join(', ')}`)),
+          h('span', { class: ch.failed ? 'bad' : 'ok' }, !ch.active ? 'Paused' : ch.failed ? 'Needs attention' : 'Healthy')),
+        h('div', { class: 'kv' },
+          h('div', {}, h('b', {}, fmtWhen(ch.lastSuccessAt)), h('span', {}, 'last delivered')),
+          h('div', {}, h('b', {}, ch.pending), h('span', {}, 'waiting')),
+          h('div', {}, h('b', { class: ch.failed ? 'bad' : '' }, ch.failed), h('span', {}, 'failed'))),
+        ch.lastError ? h('p', { class: 'muted small' }, `Last error: ${ch.lastError}`) : null))
+    : [h('section', { class: 'card' }, h('p', { class: 'muted' }, 'No direct partner channels yet. Partner websites and channel managers like STAAH or AxisRooms are connected by your administrator.'))];
+
+  $('#channels-body').replaceChildren(actions, cmCard, ...others);
+}
+
+function cmConnectForm(connected) {
+  const form = h('form', { class: 'stack-sm', novalidate: true },
+    h('p', { class: 'muted small' }, connected ? 'Update the API credentials from your Channel Manager account (Account settings).' : 'In your Channel Manager: Account settings > generate API credentials, then paste them here.'),
+    h('div', { class: 'row' },
+      h('label', {}, 'Client ID', h('input', { name: 'clientId', autocomplete: 'off', required: true })),
+      h('label', {}, 'Client secret', h('input', { name: 'clientSecret', type: 'password', autocomplete: 'off', required: true }))),
+    h('div', { class: 'toolbar-actions' },
+      connected ? h('button', { type: 'button', class: 'btn btn-danger', onclick: disconnectCm }, 'Disconnect') : null,
+      h('button', { type: 'submit', class: 'btn btn-primary' }, connected ? 'Update credentials' : 'Connect')),
+    h('div', { id: 'cm-result' }));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const out = form.querySelector('#cm-result');
+    try {
+      const r = await api('POST', `/hotels/${state.hotel.id}/channels/qloapps`, { clientId: form.clientId.value.trim(), clientSecret: form.clientSecret.value.trim() });
+      form.clientSecret.value = '';
+      const status = document.getElementById('cm-status');
+      if (status) {
+        status.textContent = 'Connected';
+        status.className = 'ok';
+      }
+      out.replaceChildren(r.webserviceKey
+        ? h('div', { class: 'stack-sm' },
+            h('p', { class: 'ok' }, 'Connected. Finish in your Channel Manager under PMS > General Settings:'),
+            h('ol', { class: 'steps' },
+              h('li', {}, 'Webservice URL:', h('div', { class: 'codebox' }, r.webserviceUrl)),
+              h('li', {}, 'Webservice key (shown only now, copy it):', h('div', { class: 'codebox' }, r.webserviceKey)),
+              h('li', {}, 'PMS timezone: Asia/Kolkata, then Test Connection and Submit.'),
+              h('li', {}, 'Map properties and room types, connect channels, then press "Sync all channels" here.')))
+        : h('p', { class: 'ok' }, 'Credentials updated. Your webservice key is unchanged.'));
+      toast('Channel manager connected.');
+    } catch (err) {
+      if (err.status !== 401) out.replaceChildren(h('p', { class: 'form-error' }, explain(err)));
+    }
+  });
+  return form;
+}
+
+async function disconnectCm() {
+  if (!window.confirm('Stop sending updates to the QloApps Channel Manager for this hotel?')) return;
+  try {
+    await api('DELETE', `/hotels/${state.hotel.id}/channels/qloapps`);
+    toast('Disconnected.');
+    loadChannels();
+  } catch (err) {
+    if (err.status !== 401) toast(explain(err), 'error');
+  }
+}
+
+async function doFullSync() {
+  try {
+    const r = await api('POST', `/hotels/${state.hotel.id}/channels/sync`, {});
+    toast(r.channelsQueued ? `Full sync queued to ${r.channelsQueued} channel(s).` : 'No channels connected yet.');
+    setTimeout(loadChannels, 1500);
+  } catch (err) {
+    if (err.status !== 401) toast(explain(err), 'error');
+  }
+}
+
+async function doRetry() {
+  try {
+    const r = await api('POST', `/hotels/${state.hotel.id}/channels/retry`, {});
+    toast(r.retried ? `Retrying ${r.retried} update(s).` : 'Nothing has failed.');
+    setTimeout(loadChannels, 1500);
+  } catch (err) {
+    if (err.status !== 401) toast(explain(err), 'error');
+  }
+}
+
 // ---------------------------------------------------------------- activity
 async function loadActivity() {
   const list = $('#activity-list');
-  if (RANK[state.hotel.role] < RANK.manager) {
+  if (role() < RANK.manager) {
     list.replaceChildren(h('li', {}, 'The activity log is visible to managers and owners.'));
     return;
   }
   try {
     const { activity } = await api('GET', `/hotels/${state.hotel.id}/activity?limit=100`);
     if (!activity.length) return list.replaceChildren(h('li', {}, 'No changes yet.'));
-    list.replaceChildren(...activity.map((a) =>
-      h('li', { class: a.action },
-        h('div', {}, a.summary),
-        h('div', { class: 'when' }, `${a.user_name ?? 'System'} · ${new Date(a.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`),
-      )));
+    list.replaceChildren(...activity.map((a) => h('li', { class: a.action },
+      h('div', {}, a.summary),
+      h('div', { class: 'when' }, `${a.user_name ?? 'System'} · ${fmtWhen(a.created_at)}`))));
   } catch (err) {
     if (err.status !== 401) list.replaceChildren(h('li', {}, explain(err)));
   }

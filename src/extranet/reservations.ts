@@ -81,7 +81,7 @@ export async function createOfflineReservation(hotelId: string, userId: string, 
       if (r.checkIn < addDays(today, -1)) throw new AppError('VALIDATION_ERROR', 'Check-in is in the past');
 
       const room = await client.query(
-        `SELECT rt.id, rt.name, rt.max_occupancy,
+        `SELECT rt.id, rt.name, rt.max_occupancy, rt.max_adults, rt.max_children,
                 (SELECT id FROM rate_plans WHERE room_type_id = rt.id AND is_active
                    AND ($3::uuid IS NULL AND is_default OR id = $3::uuid) LIMIT 1) AS rate_plan_id
            FROM room_types rt WHERE rt.id = $1 AND rt.hotel_id = $2 AND rt.is_active`,
@@ -89,8 +89,8 @@ export async function createOfflineReservation(hotelId: string, userId: string, 
       );
       const rt = room.rows[0];
       if (!rt) throw new AppError('NOT_FOUND', 'Room type not found');
-      if (r.adults + r.children > rt.max_occupancy * r.rooms) {
-        throw new AppError('VALIDATION_ERROR', `Maximum ${rt.max_occupancy} guests per room`);
+      if (r.adults > rt.max_adults * r.rooms || r.children > rt.max_children * r.rooms || r.adults + r.children > rt.max_occupancy * r.rooms) {
+        throw new AppError('VALIDATION_ERROR', `${rt.name} takes up to ${rt.max_adults} adults and ${rt.max_children} children per room`);
       }
 
       // 1. Lock every night (date order = same lock order as the online checkout).
@@ -240,9 +240,9 @@ export async function changeReservationStatus(hotelId: string, userId: string, r
 /** Offline reservations + paid online bookings, so the desk sees every guest in one list. */
 export async function listReservations(hotelId: string, from: string, to: string) {
   const { rows } = await pool.query(
-    `SELECT r.id, r.reference, 'OFFLINE' AS channel, r.source, r.source_detail, r.status::text, r.check_in, r.check_out, r.rooms,
+    `SELECT r.id, r.reference, CASE WHEN r.source = 'CHANNEL_MANAGER' THEN 'OTA' ELSE 'OFFLINE' END AS channel, r.source, r.source_detail, r.status::text, r.check_in, r.check_out, r.rooms,
             r.adults, r.children, r.guest_name, r.guest_phone, r.guest_email, r.amount_minor, r.currency, r.notes,
-            rt.name AS room_name, r.room_type_id, r.created_at, u.name AS created_by
+            rt.name AS room_name, r.room_type_id, r.created_at, u.name AS created_by, r.overbooked
        FROM reservations r
        JOIN room_types rt ON rt.id = r.room_type_id
        LEFT JOIN hotel_users u ON u.id = r.created_by
@@ -250,7 +250,7 @@ export async function listReservations(hotelId: string, from: string, to: string
      UNION ALL
      SELECT h.id, upper(substr(h.pending_booking_token, 5, 8)), 'ONLINE', 'WEBSITE', NULL, h.status::text, h.check_in, h.check_out, h.rooms,
             NULL, NULL, h.customer->>'name', h.customer->>'phone', h.customer->>'email', h.quoted_total_minor, h.currency, NULL,
-            rt.name, h.room_type_id, h.created_at, NULL
+            rt.name, h.room_type_id, h.created_at, NULL, false
        FROM inventory_holds h
        JOIN room_types rt ON rt.id = h.room_type_id
       WHERE h.hotel_id = $1 AND h.status = 'CONFIRMED' AND h.check_out > $2 AND h.check_in <= $3
