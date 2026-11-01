@@ -42,6 +42,19 @@ does no harm. Channex booking webhooks still trigger an immediate pull, as befor
    sweeper) and `/api/cron/hourly` every hour. Either upgrade to Pro and set them back to
    `* * * * *` and `7 * * * *`, or have an outside scheduler call those URLs with the
    header `Authorization: Bearer <CRON_SECRET>`.
+
+   **Hobby + cron-job.org (free):** create three jobs at https://cron-job.org, each a
+   `GET` with the request header `Authorization: Bearer <CRON_SECRET>`:
+
+   | URL | Schedule |
+   |---|---|
+   | `https://<your-domain>/api/cron/tick` | every minute |
+   | `https://<your-domain>/api/cron/hourly` | every hour |
+   | `https://<your-domain>/api/cron/daily` | once a day |
+
+   cron-job.org gives up on a request after 30 s, so set `CRON_TICK_BUDGET_MS=25000` in
+   Vercel. The daily Vercel crons in `vercel.json` can stay as a fallback; running a job
+   twice is safe.
 2. **A Postgres database.** Neon from the Vercel Marketplace is the easiest choice:
    in the Vercel project go to **Storage**, pick **Neon**, and connect it. It sets
    `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct) for you. Any Postgres 15+
