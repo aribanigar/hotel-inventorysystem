@@ -2,8 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run vercel-build",
   "crons": [
-    { "path": "/api/cron/tick", "schedule": "* * * * *" },
-    { "path": "/api/cron/hourly", "schedule": "7 * * * *" },
+    { "path": "/api/cron/tick", "schedule": "0 4 * * *" },
+    { "path": "/api/cron/hourly", "schedule": "7 3 * * *" },
     { "path": "/api/cron/daily", "schedule": "23 3 * * *" }
   ],
   "redirects": [

@@ -11,7 +11,7 @@ instead of long-running loops.
 |---|---|---|
 | Entry point | `src/index.ts` | Default-exports the Express app. Vercel picks it up automatically. No `listen()`, no loops. |
 | Build | `vercel.json` `buildCommand` = `npm run vercel-build` | Type-checks, then runs database migrations, **on production deployments only**. |
-| Cron | `vercel.json` `crons` | `/api/cron/tick` every minute, `/api/cron/hourly`, `/api/cron/daily`. |
+| Cron | `vercel.json` `crons` | `/api/cron/tick`, `/api/cron/hourly`, `/api/cron/daily` (daily by default for Hobby; see below). |
 | Web app | `vercel.json` `redirects`, `rewrites`, `headers` | `/` and `/extranet` go to `/extranet/`, with the same strict security headers as before. |
 | Database pool | `src/db/pool.ts` | Small pool (5) per instance, closed cleanly when Vercel suspends an instance. |
 | Migrations | `src/db/migrate.ts` | Uses `DATABASE_URL_UNPOOLED` (direct connection) when set. |
@@ -36,11 +36,12 @@ does no harm. Channex booking webhooks still trigger an immediate pull, as befor
 
 ## Before you start
 
-1. **Vercel Pro plan.** The per-minute cron needs Pro. On Hobby, a deployment with
-   this `vercel.json` is **rejected** (Hobby allows one cron run per day). If you must
-   use Hobby: remove the `crons` block and have an outside scheduler call the three URLs
-   with the header `Authorization: Bearer <CRON_SECRET>`. Background work then only runs
-   as often as that scheduler calls.
+1. **Cron frequency and plan.** `vercel.json` ships with every cron set to **once a day**
+   so it deploys on the Hobby plan (Hobby rejects anything more frequent). That is only a
+   safety net: `/api/cron/tick` should run every minute (outbox, Channex push, hold
+   sweeper) and `/api/cron/hourly` every hour. Either upgrade to Pro and set them back to
+   `* * * * *` and `7 * * * *`, or have an outside scheduler call those URLs with the
+   header `Authorization: Bearer <CRON_SECRET>`.
 2. **A Postgres database.** Neon from the Vercel Marketplace is the easiest choice:
    in the Vercel project go to **Storage**, pick **Neon**, and connect it. It sets
    `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct) for you. Any Postgres 15+
