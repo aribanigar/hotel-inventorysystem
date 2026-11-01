@@ -131,6 +131,7 @@ const canSell = () => managed();
 // ---------------------------------------------------------------- auth
 function showLogin() {
   $('#app-view').hidden = true;
+  $('#status-view').hidden = true;
   $('#login-view').hidden = false;
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   $('#login-form [name=email]').focus();
@@ -160,17 +161,34 @@ $('#logout-btn').addEventListener('click', async () => {
   showLogin();
 });
 
+// Any failure other than "not signed in" (401 already shows the login form) would
+// otherwise leave a blank page, so say what is wrong and offer a retry.
+function showStatus(err) {
+  const notSetUp = err.code === 'NOT_CONFIGURED';
+  $('#status-title').textContent = notSetUp ? 'Almost ready' : 'Can’t reach the server';
+  $('#status-message').textContent = notSetUp
+    ? `${err.message}. Add it in Vercel (Settings → Environment Variables), redeploy, then try again.`
+    : explain(err);
+  $('#login-view').hidden = true;
+  $('#app-view').hidden = true;
+  $('#status-view').hidden = false;
+}
+
+$('#status-retry').addEventListener('click', () => boot());
+
 async function boot() {
   let me;
   try {
     me = await api('GET', '/me');
-  } catch {
+  } catch (err) {
+    if (err.status !== 401) showStatus(err);
     return;
   }
   state.user = me.user;
   state.hotels = me.hotels;
   $('#user-name').textContent = me.user.name;
   $('#hotel-select').replaceChildren(...me.hotels.map((ht) => h('option', { value: ht.id }, ht.name)));
+  $('#status-view').hidden = true;
   $('#login-view').hidden = true;
   $('#app-view').hidden = false;
   if (!me.hotels.length) {

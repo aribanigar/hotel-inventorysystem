@@ -28,6 +28,16 @@
     </form>
   </main>
 
+  <!-- Server unreachable or not set up yet (e.g. DATABASE_URL missing) -->
+  <main id="status-view" class="login" hidden>
+    <div class="login-card">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <h1 id="status-title">Hotel Extranet</h1>
+      <p id="status-message" class="muted"></p>
+      <button id="status-retry" class="btn btn-primary btn-block" type="button">Try again</button>
+    </div>
+  </main>
+
   <!-- App -->
   <div id="app-view" hidden>
     <header class="topbar">
