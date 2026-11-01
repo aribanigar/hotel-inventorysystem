@@ -13,6 +13,7 @@ const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 export async function migrate(): Promise<string[]> {
   // Loaded lazily so a skipped `--vercel-build` run doesn't need a valid environment.
   const { config } = await import('../config.js');
+  if (!config.DATABASE_URL) throw new Error('DATABASE_URL is not set');
   const client = new pg.Client({
     connectionString: config.DATABASE_URL_UNPOOLED ?? config.DATABASE_URL,
     application_name: 'hotel-inventory-migrate',
@@ -63,6 +64,9 @@ function shouldRun(): boolean {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   if (!shouldRun()) {
     console.log(`migrations skipped (VERCEL_ENV=${process.env.VERCEL_ENV ?? 'unset'}; set MIGRATE_ON_BUILD=true to run)`);
+  } else if (process.argv.includes('--vercel-build') && !process.env.DATABASE_URL) {
+    // Deploy without a database for now; the next deploy after DATABASE_URL is set migrates.
+    console.log('migrations skipped (DATABASE_URL not set; add it in Vercel and redeploy)');
   } else {
     migrate()
       .then((files) => console.log(files.length ? `applied: ${files.join(', ')}` : 'already up to date'))

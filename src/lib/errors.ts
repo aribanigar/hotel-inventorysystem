@@ -18,6 +18,7 @@ export type ErrorCode =
   | 'PAYMENT_ERROR'
   | 'CONFLICT'
   | 'RATE_LIMITED'
+  | 'NOT_CONFIGURED' //     a feature's env vars (database, payment keys) are not set yet
   | 'INTERNAL_ERROR';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -36,6 +37,7 @@ const STATUS: Record<ErrorCode, number> = {
   PAYMENT_ERROR: 502,
   CONFLICT: 409,
   RATE_LIMITED: 429,
+  NOT_CONFIGURED: 503,
   INTERNAL_ERROR: 500,
 };
 

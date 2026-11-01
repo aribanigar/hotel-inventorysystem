@@ -10,7 +10,7 @@
  *     so whichever arrives first confirms and the other becomes a no-op.
  */
 import { z } from 'zod';
-import { config } from '../config.js';
+import { config, configured } from '../config.js';
 import { hmacSha256Hex, safeEqual } from '../lib/crypto.js';
 import { AppError } from '../lib/errors.js';
 import { HttpCallError, requestJson } from '../lib/http.js';
@@ -42,7 +42,9 @@ class RazorpayProvider implements PaymentProvider {
   readonly name = 'razorpay' as const;
 
   async createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
-    const auth = Buffer.from(`${config.RAZORPAY_KEY_ID}:${config.RAZORPAY_KEY_SECRET}`).toString('base64');
+    // Thrown before any gateway call; Live Ping then releases the hold it just took.
+    if (!configured.payments) throw new AppError('NOT_CONFIGURED', 'Online payment is not set up yet');
+    const auth =Buffer.from(`${config.RAZORPAY_KEY_ID}:${config.RAZORPAY_KEY_SECRET}`).toString('base64');
     try {
       const { json } = await requestJson('https://api.razorpay.com/v1/orders', {
         method: 'POST',

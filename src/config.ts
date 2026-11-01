@@ -20,7 +20,8 @@ const EnvSchema = z
     PORT: z.coerce.number().int().positive().default(4000),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
-    DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+    /** Until set, every /api route answers 503 NOT_CONFIGURED (the app still deploys). */
+    DATABASE_URL: z.string().min(1).optional(),
     /** Direct (non-pooler) connection for migrations; Neon's Vercel integration sets it. */
     DATABASE_URL_UNPOOLED: z.string().min(1).optional(),
     /** Per instance. Serverless runs many small instances, so keep it low there. */
@@ -58,25 +59,23 @@ const EnvSchema = z
     /** Nights ahead kept in sync with Channex (its full sync is 500 days). */
     CHANNEX_HORIZON_DAYS: z.coerce.number().int().min(30).max(730).default(500),
 
-    PAYMENT_PROVIDER: z.enum(['razorpay', 'mock']).default('mock'),
-    RAZORPAY_KEY_ID: z.string().optional(),
-    RAZORPAY_KEY_SECRET: z.string().optional(),
-    RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+    /** Defaults to razorpay in production so a missing setting never confirms bookings unpaid. */
+    PAYMENT_PROVIDER: z.enum(['razorpay', 'mock']).optional(),
+    /** Optional: until all three are set, checkout answers 503 NOT_CONFIGURED. */
+    RAZORPAY_KEY_ID: z.string().min(1).optional(),
+    RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
+    RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
-    // Fail fast at boot rather than at the first customer checkout.
-    if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER !== 'razorpay') {
+    // The mock provider confirms bookings without taking money: never allow it live.
+    if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER === 'mock') {
       ctx.addIssue({ code: 'custom', path: ['PAYMENT_PROVIDER'], message: 'must be razorpay in production' });
     }
-    if (onVercel && env.NODE_ENV === 'production' && !env.CRON_SECRET) {
-      ctx.addIssue({ code: 'custom', path: ['CRON_SECRET'], message: 'required on Vercel: cron jobs run the background work' });
-    }
-    if (env.PAYMENT_PROVIDER === 'razorpay') {
-      for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) {
-        if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: 'required when PAYMENT_PROVIDER=razorpay' });
-      }
-    }
-  });
+  })
+  .transform((env) => ({
+    ...env,
+    PAYMENT_PROVIDER: env.PAYMENT_PROVIDER ?? (env.NODE_ENV === 'production' ? 'razorpay' : 'mock'),
+  }));
 
 const parsed = EnvSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -87,3 +86,23 @@ if (!parsed.success) {
 
 export const config = parsed.data;
 export type Config = typeof config;
+
+/** Whether each optional feature has its env vars. Missing ones answer 503 NOT_CONFIGURED. */
+export const configured = {
+  database: Boolean(config.DATABASE_URL),
+  payments:
+    config.PAYMENT_PROVIDER === 'mock' ||
+    Boolean(config.RAZORPAY_KEY_ID && config.RAZORPAY_KEY_SECRET && config.RAZORPAY_WEBHOOK_SECRET),
+  cron: Boolean(config.CRON_SECRET),
+};
+
+/** Names of env vars still to set, for the boot log and /healthz. Never values. */
+export function missingEnv(): string[] {
+  const out: string[] = [];
+  if (!configured.database) out.push('DATABASE_URL');
+  if (!configured.payments) {
+    for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) if (!config[k]) out.push(k);
+  }
+  if (onVercel && !configured.cron) out.push('CRON_SECRET');
+  return out;
+}

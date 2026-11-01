@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { configured, missingEnv } from '../config.js';
 import { pool } from '../db/pool.js';
 import { AppError, isAppError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
@@ -40,6 +41,15 @@ export function createApp() {
     next();
   });
 
+  const missing = missingEnv();
+  if (missing.length) logger.warn({ missing }, 'env vars not set yet; those features answer 503 NOT_CONFIGURED');
+
+  // No database yet: every API route answers 503 instead of failing on a connection.
+  // Static files and /healthz still work, so the deploy can be checked first.
+  if (!configured.database) {
+    app.use('/api', (_req, _res, next) => next(new AppError('NOT_CONFIGURED', 'Database is not set up yet (DATABASE_URL)')));
+  }
+
   // Routes that need the RAW body (signature checks) are mounted BEFORE express.json.
   app.use('/api/v1/webhooks', webhooksRouter);
   app.use('/api/v1/payments', paymentsRouter);
@@ -74,11 +84,14 @@ export function createApp() {
   );
 
   app.get('/healthz', async (_req, res) => {
+    // Names only, never values: tells you which env vars are still to set.
+    const missing = missingEnv();
+    if (!configured.database) return void res.status(503).json({ ok: false, missing });
     try {
       await pool.query('SELECT 1');
-      res.json({ ok: true });
+      res.json({ ok: true, missing });
     } catch {
-      res.status(503).json({ ok: false });
+      res.status(503).json({ ok: false, missing });
     }
   });
 
